@@ -3,6 +3,10 @@
 -- Rama: feature-mant_vehiculo
 -- =============================================================================
 
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
 USE ServitacoDB;
 GO
 

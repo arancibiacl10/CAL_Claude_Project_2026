@@ -14,6 +14,13 @@ const BADGE_ESTADO: Record<string, string> = {
   EN_CURSO: 'badge-yellow', FINALIZADO: 'badge-green',
 };
 
+// Las fechas son DATE puras (sin hora); formatear por texto evita que
+// new Date(iso) las corra un día por conversión de timezone.
+function formatFecha(iso: string) {
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  return `${d}-${m}-${y}`;
+}
+
 export default function MantenimientoPage() {
   const [page, setPage] = useState(1);
   const queryClient = useQueryClient();
@@ -70,9 +77,9 @@ export default function MantenimientoPage() {
                       <td className="py-3 px-2 font-mono font-semibold text-gray-900">{m.patente}</td>
                       <td className="py-3 px-2 text-gray-700">{m.tipo_mantenimiento}</td>
                       <td className="py-3 px-2"><span className={BADGE_ESTADO[m.estado]}>{m.estado}</span></td>
-                      <td className="py-3 px-2 text-gray-600">{new Date(m.fecha_inicio).toLocaleDateString('es-CL')}</td>
+                      <td className="py-3 px-2 text-gray-600">{formatFecha(m.fecha_inicio)}</td>
                       <td className="py-3 px-2 text-gray-600">
-                        {m.fecha_proximo ? new Date(m.fecha_proximo).toLocaleDateString('es-CL') : '—'}
+                        {m.fecha_proximo ? formatFecha(m.fecha_proximo) : '—'}
                       </td>
                       <td className="py-3 px-2 text-gray-600">{m.taller ?? '—'}</td>
                       <td className="py-3 px-2 text-right">
