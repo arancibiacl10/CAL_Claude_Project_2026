@@ -8,6 +8,7 @@ const nav = [
   { to: '/recaudacion', label: 'Recaudación',       icon: '💰' },
   { to: '/pagos',       label: 'Pagos',             icon: '💳' },
   { to: '/vehiculos',   label: 'Vehículos',         icon: '🚌' },
+  { to: '/mantenimiento',label: 'Mantenimiento',    icon: '🔧' },
   { to: '/conductores', label: 'Conductores',       icon: '👤' },
   { to: '/vencimientos',label: 'Vencimientos',      icon: '⚠️' },
 ];

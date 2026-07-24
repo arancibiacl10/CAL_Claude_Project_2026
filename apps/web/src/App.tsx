@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import VehiculosPage from './pages/VehiculosPage';
+import MantenimientoPage from './pages/MantenimientoPage';
 import ConductoresPage from './pages/ConductoresPage';
 import HojaRutaPage from './pages/HojaRutaPage';
 import ControlMensualPage from './pages/ControlMensualPage';
@@ -25,6 +26,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard"      element={<DashboardPage />} />
           <Route path="vehiculos"      element={<VehiculosPage />} />
+          <Route path="mantenimiento"  element={<MantenimientoPage />} />
           <Route path="conductores"    element={<ConductoresPage />} />
           <Route path="hoja-ruta"      element={<HojaRutaPage />} />
           <Route path="control"        element={<ControlMensualPage />} />
