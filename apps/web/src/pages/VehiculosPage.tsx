@@ -159,6 +159,76 @@ function FormSection({ title, children }: { title: string; children: React.React
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileDropzone({
+  label, accept, icon, hint, file, error, onFile,
+}: {
+  label: string; accept: string; icon: string; hint: string;
+  file: File | null; error?: string; onFile: (file: File | null) => void;
+}) {
+  const [dragOver, setDragOver] = useState(false);
+  const inputId = `dropzone-${label.replace(/\s+/g, '-').toLowerCase()}`;
+
+  return (
+    <div>
+      <label className="label">{label}</label>
+      <label
+        htmlFor={inputId}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          onFile(e.dataTransfer.files?.[0] ?? null);
+        }}
+        className={`flex items-center gap-3 rounded-lg border-2 border-dashed px-4 py-3 cursor-pointer transition-colors ${
+          dragOver ? 'border-brand-500 bg-brand-50' : error ? 'border-red-300 bg-red-50/40' : 'border-gray-300 hover:border-brand-400 hover:bg-brand-50/40'
+        }`}
+      >
+        <span className="text-2xl leading-none">{icon}</span>
+        <div className="min-w-0 flex-1">
+          {file ? (
+            <>
+              <p className="text-sm font-medium text-gray-900 truncate">{file.name}</p>
+              <p className="text-xs text-gray-400">{formatBytes(file.size)}</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-gray-600">
+                Arrastrá un archivo aquí o <span className="text-brand-600 font-medium">buscá en tu equipo</span>
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5">{hint}</p>
+            </>
+          )}
+        </div>
+        {file && (
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFile(null); }}
+            className="text-gray-400 hover:text-red-600 text-lg leading-none px-1"
+            aria-label="Quitar archivo"
+          >
+            &times;
+          </button>
+        )}
+      </label>
+      <input
+        id={inputId}
+        type="file"
+        accept={accept}
+        className="hidden"
+        onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+      />
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </div>
+  );
+}
+
 function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [patente, setPatente] = useState('');
   const [patenteError, setPatenteError] = useState('');
@@ -239,9 +309,9 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
   return (
     <ModalShell title="Nuevo vehículo" onClose={onClose} maxWidth="max-w-2xl">
-      <form onSubmit={handleSubmit} className="space-y-5">
+      <form onSubmit={handleSubmit} className="space-y-6">
         <FormSection title="Datos del vehículo">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-5">
             <div>
               <label className="label">Patente</label>
               <input
@@ -277,44 +347,42 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
               <input type="date" className="input" value={fechaIngreso} onChange={(e) => setFechaIngreso(e.target.value)} required />
             </div>
             <div className="col-span-2">
-              <label className="label">Contrato de servicio (PDF)</label>
-              <input
-                type="file"
+              <FileDropzone
+                label="Contrato de servicio (PDF)"
                 accept="application/pdf"
-                className="input"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
+                icon="📄"
+                hint="Solo PDF, hasta 10 MB"
+                file={contratoPdf}
+                error={contratoError}
+                onFile={(file) => {
                   if (file && file.type !== 'application/pdf') {
                     setContratoError('El contrato debe ser un archivo PDF');
                     setContratoPdf(null);
-                    e.target.value = '';
                     return;
                   }
                   setContratoError('');
                   setContratoPdf(file);
                 }}
               />
-              {contratoError && <p className="text-xs text-red-600 mt-1">{contratoError}</p>}
             </div>
-            <div>
-              <label className="label">Imagen del vehículo</label>
-              <input
-                type="file"
+            <div className="col-span-2">
+              <FileDropzone
+                label="Imagen del vehículo"
                 accept="image/*"
-                className="input"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
+                icon="🖼️"
+                hint="JPG, PNG, WEBP o GIF, hasta 5 MB"
+                file={imagenVehiculo}
+                error={imagenError}
+                onFile={(file) => {
                   if (file && !file.type.startsWith('image/')) {
                     setImagenError('El archivo debe ser una imagen');
                     setImagenVehiculo(null);
-                    e.target.value = '';
                     return;
                   }
                   setImagenError('');
                   setImagenVehiculo(file);
                 }}
               />
-              {imagenError && <p className="text-xs text-red-600 mt-1">{imagenError}</p>}
             </div>
           </div>
         </FormSection>
@@ -341,7 +409,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
         </FormSection>
 
         <FormSection title="Propietario">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-5">
             <div>
               <label className="label">RUT</label>
               <input
