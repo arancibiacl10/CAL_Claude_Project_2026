@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../lib/api';
 import { validarRut, formatearRut } from '../lib/rut';
 import { validarPatente, formatearPatente } from '../lib/patente';
+import FileDropzone from '../components/FileDropzone';
+import ModalShell, { FormSection } from '../components/ModalShell';
 
 interface Vehiculo {
   id_vehiculo: number; patente: string; estado: string; estado_desc: string;
@@ -132,99 +134,6 @@ export default function VehiculosPage() {
           onChanged={() => queryClient.invalidateQueries({ queryKey: ['vehiculos'] })}
         />
       )}
-    </div>
-  );
-}
-
-function ModalShell({ title, children, onClose, maxWidth = 'max-w-md' }: { title: string; children: React.ReactNode; onClose: () => void; maxWidth?: string }) {
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className={`card w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function FormSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">{title}</p>
-      <div className="space-y-4">{children}</div>
-    </div>
-  );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function FileDropzone({
-  label, accept, icon, hint, file, error, onFile,
-}: {
-  label: string; accept: string; icon: string; hint: string;
-  file: File | null; error?: string; onFile: (file: File | null) => void;
-}) {
-  const [dragOver, setDragOver] = useState(false);
-  const inputId = `dropzone-${label.replace(/\s+/g, '-').toLowerCase()}`;
-
-  return (
-    <div>
-      <label className="label">{label}</label>
-      <label
-        htmlFor={inputId}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          onFile(e.dataTransfer.files?.[0] ?? null);
-        }}
-        className={`flex items-center gap-3 rounded-lg border-2 border-dashed px-4 py-3 cursor-pointer transition-colors ${
-          dragOver ? 'border-brand-500 bg-brand-50' : error ? 'border-red-300 bg-red-50/40' : 'border-gray-300 hover:border-brand-400 hover:bg-brand-50/40'
-        }`}
-      >
-        <span className="text-2xl leading-none">{icon}</span>
-        <div className="min-w-0 flex-1">
-          {file ? (
-            <>
-              <p className="text-sm font-medium text-gray-900 truncate">{file.name}</p>
-              <p className="text-xs text-gray-400">{formatBytes(file.size)}</p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-gray-600">
-                Arrastrá un archivo aquí o <span className="text-brand-600 font-medium">buscá en tu equipo</span>
-              </p>
-              <p className="text-xs text-gray-400 mt-0.5">{hint}</p>
-            </>
-          )}
-        </div>
-        {file && (
-          <button
-            type="button"
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFile(null); }}
-            className="text-gray-400 hover:text-red-600 text-lg leading-none px-1"
-            aria-label="Quitar archivo"
-          >
-            &times;
-          </button>
-        )}
-      </label>
-      <input
-        id={inputId}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={(e) => onFile(e.target.files?.[0] ?? null)}
-      />
-      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
     </div>
   );
 }

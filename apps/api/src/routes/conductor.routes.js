@@ -1,7 +1,19 @@
+const fs   = require('fs');
+const path = require('path');
 const router = require('express').Router();
 const { body, param, validationResult } = require('express-validator');
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
+const { validarRut, formatearRut } = require('../utils/rut');
+const { uploadImagenConductor, CARPETA_IMAGENES_CONDUCTOR } = require('../middleware/uploadImagenConductor');
+
+const CONTENT_TYPE_POR_EXTENSION = {
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png':  'image/png',
+  '.webp': 'image/webp',
+  '.gif':  'image/gif',
+};
 
 router.use(authenticate);
 
@@ -65,39 +77,92 @@ router.get('/:id', param('id').isInt(), async (req, res) => {
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
 
-  res.json({ ...conductor, licencias: licencias.recordset, vehiculos: vehiculosAsignados.recordset });
+  const fotoConductor = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida FROM flota.ImagenConductor
+     WHERE id_conductor = @id AND tipo = 'FOTO_CONDUCTOR' ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
+  const fotoLicencia = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida FROM flota.ImagenConductor
+     WHERE id_conductor = @id AND tipo = 'FOTO_LICENCIA' ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
+  res.json({
+    ...conductor,
+    licencias: licencias.recordset,
+    vehiculos: vehiculosAsignados.recordset,
+    foto_conductor: fotoConductor ? { id_imagen: fotoConductor.id_imagen, fecha_subida: fotoConductor.fecha_subida } : null,
+    foto_licencia: fotoLicencia ? { id_imagen: fotoLicencia.id_imagen, fecha_subida: fotoLicencia.fecha_subida } : null,
+  });
 });
 
 // POST /api/conductores
 router.post('/',
   authorize('ADMIN', 'OPERADOR'),
-  body('rut').notEmpty().trim(),
+  body('rut').notEmpty().trim()
+    .custom((value) => validarRut(value)).withMessage('RUT inválido'),
   body('nombre').notEmpty().trim(),
+  body('apellido_paterno').optional().trim(),
+  body('apellido_materno').optional().trim(),
+  body('direccion').optional().trim(),
+  body('telefono').optional().trim(),
+  body('email').optional({ checkFalsy: true }).isEmail(),
+  body('fecha_ingreso').optional().isISO8601(),
+  body('observaciones').optional().trim(),
+  body('id_tipo_licencia').optional().isInt({ min: 1 }),
+  body('numero_licencia').optional().trim(),
+  body('fecha_emision_licencia').optional().isISO8601(),
+  body('fecha_vencimiento_licencia').optional().isISO8601(),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { rut, nombre, apellido_paterno, apellido_materno, direccion, telefono, email, fecha_ingreso } = req.body;
+    const {
+      rut, nombre, apellido_paterno, apellido_materno, direccion, telefono, email,
+      fecha_ingreso, observaciones,
+      id_tipo_licencia, numero_licencia, fecha_emision_licencia, fecha_vencimiento_licencia,
+    } = req.body;
+
+    const rutNormalizado = formatearRut(rut);
 
     const result = await query(
       `INSERT INTO flota.Conductor
-         (rut, nombre, apellido_paterno, apellido_materno, direccion, telefono, email, fecha_ingreso, id_usuario_reg)
+         (rut, nombre, apellido_paterno, apellido_materno, direccion, telefono, email, fecha_ingreso, observaciones, id_usuario_reg)
        OUTPUT INSERTED.id_conductor
-       VALUES (@rut, @nombre, @ap, @am, @dir, @tel, @email, @fi, @usr)`,
+       VALUES (@rut, @nombre, @ap, @am, @dir, @tel, @email, @fi, @obs, @usr)`,
       [
-        { name: 'rut',    type: sql.VarChar(12),  value: rut },
+        { name: 'rut',    type: sql.VarChar(12),  value: rutNormalizado },
         { name: 'nombre', type: sql.VarChar(150), value: nombre },
-        { name: 'ap',     type: sql.VarChar(100), value: apellido_paterno ?? null },
-        { name: 'am',     type: sql.VarChar(100), value: apellido_materno ?? null },
-        { name: 'dir',    type: sql.VarChar(300), value: direccion ?? null },
-        { name: 'tel',    type: sql.VarChar(20),  value: telefono ?? null },
-        { name: 'email',  type: sql.VarChar(150), value: email ?? null },
-        { name: 'fi',     type: sql.Date,         value: fecha_ingreso ?? null },
+        { name: 'ap',     type: sql.VarChar(100), value: apellido_paterno || null },
+        { name: 'am',     type: sql.VarChar(100), value: apellido_materno || null },
+        { name: 'dir',    type: sql.VarChar(300), value: direccion || null },
+        { name: 'tel',    type: sql.VarChar(20),  value: telefono || null },
+        { name: 'email',  type: sql.VarChar(150), value: email || null },
+        { name: 'fi',     type: sql.Date,         value: fecha_ingreso || null },
+        { name: 'obs',    type: sql.VarChar(500), value: observaciones || null },
         { name: 'usr',    type: sql.Int,          value: req.user.id },
       ]
     );
 
-    res.status(201).json({ id_conductor: result.recordset[0].id_conductor });
+    const id_conductor = result.recordset[0].id_conductor;
+
+    if (fecha_vencimiento_licencia) {
+      await query(
+        `INSERT INTO flota.LicenciaConductor (id_conductor, id_tipo_licencia, numero_licencia, fecha_emision, fecha_vencimiento)
+         VALUES (@id, @tipo, @num, @femision, @fvto)`,
+        [
+          { name: 'id',       type: sql.Int,          value: id_conductor },
+          { name: 'tipo',     type: sql.TinyInt,      value: id_tipo_licencia || 1 },
+          { name: 'num',      type: sql.VarChar(50),  value: numero_licencia || null },
+          { name: 'femision', type: sql.Date,         value: fecha_emision_licencia || null },
+          { name: 'fvto',     type: sql.Date,         value: fecha_vencimiento_licencia },
+        ]
+      );
+    }
+
+    res.status(201).json({ id_conductor });
   }
 );
 
@@ -105,11 +170,12 @@ router.post('/',
 router.put('/:id',
   authorize('ADMIN', 'OPERADOR'),
   param('id').isInt(),
+  body('email').optional({ checkFalsy: true }).isEmail(),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { nombre, apellido_paterno, apellido_materno, direccion, telefono, email, fecha_retiro, obs_retiro } = req.body;
+    const { nombre, apellido_paterno, apellido_materno, direccion, telefono, email, observaciones, fecha_retiro, obs_retiro } = req.body;
     const id = parseInt(req.params.id);
 
     const existe = await queryOne(
@@ -126,25 +192,89 @@ router.put('/:id',
          direccion        = ISNULL(@dir, direccion),
          telefono         = ISNULL(@tel, telefono),
          email            = ISNULL(@email, email),
+         observaciones    = ISNULL(@observaciones, observaciones),
          fecha_retiro     = ISNULL(@fr, fecha_retiro),
          obs_retiro       = ISNULL(@obs, obs_retiro)
        WHERE id_conductor = @id`,
       [
-        { name: 'nombre', type: sql.VarChar(150), value: nombre ?? null },
-        { name: 'ap',     type: sql.VarChar(100), value: apellido_paterno ?? null },
-        { name: 'am',     type: sql.VarChar(100), value: apellido_materno ?? null },
-        { name: 'dir',    type: sql.VarChar(300), value: direccion ?? null },
-        { name: 'tel',    type: sql.VarChar(20),  value: telefono ?? null },
-        { name: 'email',  type: sql.VarChar(150), value: email ?? null },
-        { name: 'fr',     type: sql.Date,         value: fecha_retiro ?? null },
-        { name: 'obs',    type: sql.VarChar(500), value: obs_retiro ?? null },
-        { name: 'id',     type: sql.Int,          value: id },
+        { name: 'nombre',        type: sql.VarChar(150), value: nombre ?? null },
+        { name: 'ap',            type: sql.VarChar(100), value: apellido_paterno ?? null },
+        { name: 'am',            type: sql.VarChar(100), value: apellido_materno ?? null },
+        { name: 'dir',           type: sql.VarChar(300), value: direccion ?? null },
+        { name: 'tel',           type: sql.VarChar(20),  value: telefono ?? null },
+        { name: 'email',         type: sql.VarChar(150), value: email ?? null },
+        { name: 'observaciones', type: sql.VarChar(500), value: observaciones ?? null },
+        { name: 'fr',            type: sql.Date,         value: fecha_retiro ?? null },
+        { name: 'obs',           type: sql.VarChar(500), value: obs_retiro ?? null },
+        { name: 'id',            type: sql.Int,          value: id },
       ]
     );
 
     res.json({ ok: true });
   }
 );
+
+// POST /api/conductores/:id/imagen — sube foto del conductor o de la licencia
+router.post('/:id/imagen',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const conductor = await queryOne(
+      `SELECT id_conductor FROM flota.Conductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!conductor) return res.status(404).json({ error: 'Conductor no encontrado' });
+
+    uploadImagenConductor.single('imagen')(req, res, async (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el archivo de la imagen' });
+      if (!['FOTO_CONDUCTOR', 'FOTO_LICENCIA'].includes(req.body.tipo)) {
+        return res.status(400).json({ error: 'Tipo de imagen inválido' });
+      }
+
+      const tipo = req.body.tipo;
+
+      const nuevo = await query(
+        `INSERT INTO flota.ImagenConductor (id_conductor, tipo, ruta_archivo)
+         OUTPUT INSERTED.id_imagen, INSERTED.fecha_subida
+         VALUES (@id, @tipo, @ruta)`,
+        [
+          { name: 'id',   type: sql.Int,          value: id },
+          { name: 'tipo', type: sql.VarChar(50),  value: tipo },
+          { name: 'ruta', type: sql.VarChar(500), value: req.file.filename },
+        ]
+      );
+
+      res.status(201).json(nuevo.recordset[0]);
+    });
+  }
+);
+
+// GET /api/conductores/:id/imagen?tipo=FOTO_CONDUCTOR|FOTO_LICENCIA
+router.get('/:id/imagen', param('id').isInt(), async (req, res) => {
+  const tipo = req.query.tipo === 'FOTO_LICENCIA' ? 'FOTO_LICENCIA' : 'FOTO_CONDUCTOR';
+
+  const imagen = await queryOne(
+    `SELECT TOP 1 ruta_archivo FROM flota.ImagenConductor
+     WHERE id_conductor = @id AND tipo = @tipo ORDER BY fecha_subida DESC`,
+    [
+      { name: 'id',   type: sql.Int,         value: req.params.id },
+      { name: 'tipo', type: sql.VarChar(50), value: tipo },
+    ]
+  );
+  if (!imagen) return res.status(404).json({ error: 'Este conductor no tiene esa imagen cargada' });
+
+  const rutaAbsoluta = path.join(CARPETA_IMAGENES_CONDUCTOR, path.basename(imagen.ruta_archivo));
+  if (!fs.existsSync(rutaAbsoluta)) return res.status(404).json({ error: 'El archivo de la imagen no se encuentra en el servidor' });
+
+  const contentType = CONTENT_TYPE_POR_EXTENSION[path.extname(rutaAbsoluta).toLowerCase()] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.sendFile(rutaAbsoluta);
+});
 
 // GET /api/conductores/vencimientos/licencias
 router.get('/vencimientos/licencias', async (req, res) => {
