@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../lib/api';
 import { validarRut, formatearRut } from '../lib/rut';
@@ -167,6 +167,8 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
   const [codigoLinea, setCodigoLinea] = useState('');
   const [contratoPdf, setContratoPdf] = useState<File | null>(null);
   const [contratoError, setContratoError] = useState('');
+  const [imagenVehiculo, setImagenVehiculo] = useState<File | null>(null);
+  const [imagenError, setImagenError] = useState('');
   const [rutPropietario, setRutPropietario] = useState('');
   const [rutError, setRutError] = useState('');
   const [nombrePropietario, setNombrePropietario] = useState('');
@@ -220,6 +222,11 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
         const form = new FormData();
         form.append('contrato', contratoPdf);
         await api.post(`/vehiculos/${data.id_vehiculo}/contrato`, form);
+      }
+      if (imagenVehiculo) {
+        const form = new FormData();
+        form.append('imagen', imagenVehiculo);
+        await api.post(`/vehiculos/${data.id_vehiculo}/imagen`, form);
       }
 
       onSaved();
@@ -289,6 +296,26 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
               />
               {contratoError && <p className="text-xs text-red-600 mt-1">{contratoError}</p>}
             </div>
+            <div>
+              <label className="label">Imagen del vehículo</label>
+              <input
+                type="file"
+                accept="image/*"
+                className="input"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  if (file && !file.type.startsWith('image/')) {
+                    setImagenError('El archivo debe ser una imagen');
+                    setImagenVehiculo(null);
+                    e.target.value = '';
+                    return;
+                  }
+                  setImagenError('');
+                  setImagenVehiculo(file);
+                }}
+              />
+              {imagenError && <p className="text-xs text-red-600 mt-1">{imagenError}</p>}
+            </div>
           </div>
         </FormSection>
 
@@ -356,7 +383,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError || !!patenteError || !!contratoError} className="btn-primary">
+          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError || !!patenteError || !!contratoError || !!imagenError} className="btn-primary">
             {saving ? 'Guardando...' : 'Crear'}
           </button>
         </div>
@@ -379,6 +406,7 @@ interface VehiculoDetalle {
   direccion_propietario: string | null; telefono_propietario: string | null; email_propietario: string | null;
   documentos: DocumentoVehiculo[]; historial: HistorialEstado[];
   contrato_pdf: { id_imagen: number; fecha_subida: string } | null;
+  imagen_vehiculo: { id_imagen: number; fecha_subida: string } | null;
 }
 
 const TIPO_DOC_LABEL: Record<string, string> = {
@@ -394,6 +422,9 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
   const [saving, setSaving] = useState(false);
   const [subiendoContrato, setSubiendoContrato] = useState(false);
   const [contratoError, setContratoError] = useState('');
+  const [subiendoImagen, setSubiendoImagen] = useState(false);
+  const [imagenError, setImagenError] = useState('');
+  const [imagenUrl, setImagenUrl] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   async function handleVerContrato() {
@@ -424,10 +455,45 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
     }
   }
 
+  async function handleSubirImagen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setImagenError('El archivo debe ser una imagen');
+      return;
+    }
+    setImagenError('');
+    setSubiendoImagen(true);
+    try {
+      const form = new FormData();
+      form.append('imagen', file);
+      await api.post(`/vehiculos/${id}/imagen`, form);
+      queryClient.invalidateQueries({ queryKey: ['vehiculo-detalle', id] });
+    } catch (err: any) {
+      setImagenError(err.response?.data?.error ?? 'Error al subir la imagen');
+    } finally {
+      setSubiendoImagen(false);
+    }
+  }
+
   const { data: vehiculo, isLoading } = useQuery({
     queryKey: ['vehiculo-detalle', id],
     queryFn:  () => api.get(`/vehiculos/${id}`).then((r) => r.data as VehiculoDetalle),
   });
+
+  useEffect(() => {
+    if (!vehiculo?.imagen_vehiculo) {
+      setImagenUrl(null);
+      return;
+    }
+    let objectUrl: string | null = null;
+    api.get(`/vehiculos/${id}/imagen`, { responseType: 'blob' }).then((res) => {
+      objectUrl = URL.createObjectURL(res.data);
+      setImagenUrl(objectUrl);
+    });
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [id, vehiculo?.imagen_vehiculo?.id_imagen]);
 
   const { data: estados } = useQuery({
     queryKey: ['estados-vehiculo'],
@@ -480,6 +546,19 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
                   <input type="file" accept="application/pdf" className="hidden" disabled={subiendoContrato} onChange={handleSubirContrato} />
                 </label>
                 {contratoError && <p className="text-xs text-red-600 mt-1">{contratoError}</p>}
+              </div>
+              <div className="col-span-2">
+                <span className="text-gray-400">Imagen del vehículo</span><br />
+                {imagenUrl ? (
+                  <img src={imagenUrl} alt={`Foto de ${vehiculo.patente}`} className="mt-1 max-h-40 rounded-lg border border-gray-200" />
+                ) : (
+                  <span className="text-gray-500 text-xs">Sin imagen cargada</span>
+                )}
+                <label className="block mt-1 text-xs text-brand-600 hover:text-brand-800 cursor-pointer font-medium">
+                  {subiendoImagen ? 'Subiendo...' : vehiculo.imagen_vehiculo ? 'Reemplazar imagen' : 'Subir imagen'}
+                  <input type="file" accept="image/*" className="hidden" disabled={subiendoImagen} onChange={handleSubirImagen} />
+                </label>
+                {imagenError && <p className="text-xs text-red-600 mt-1">{imagenError}</p>}
               </div>
               {vehiculo.observaciones && (
                 <div className="col-span-2"><span className="text-gray-400">Observaciones</span><br />{vehiculo.observaciones}</div>

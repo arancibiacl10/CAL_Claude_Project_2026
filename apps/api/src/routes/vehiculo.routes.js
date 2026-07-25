@@ -7,6 +7,15 @@ const { authenticate, authorize } = require('../middleware/auth');
 const { validarRut, formatearRut } = require('../utils/rut');
 const { validarPatente, formatearPatente } = require('../utils/patente');
 const { uploadContrato, CARPETA_CONTRATOS } = require('../middleware/uploadContrato');
+const { uploadImagen, CARPETA_IMAGENES } = require('../middleware/uploadImagen');
+
+const CONTENT_TYPE_POR_EXTENSION = {
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png':  'image/png',
+  '.webp': 'image/webp',
+  '.gif':  'image/gif',
+};
 
 router.use(authenticate);
 
@@ -79,11 +88,20 @@ router.get('/:id', param('id').isInt(), async (req, res) => {
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
 
+  const imagen = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'FOTO_VEHICULO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
   res.json({
     ...vehiculo,
     documentos: documentos.recordset,
     historial: historial.recordset,
     contrato_pdf: contrato ? { id_imagen: contrato.id_imagen, fecha_subida: contrato.fecha_subida } : null,
+    imagen_vehiculo: imagen ? { id_imagen: imagen.id_imagen, fecha_subida: imagen.fecha_subida } : null,
   });
 });
 
@@ -295,6 +313,59 @@ router.get('/:id/contrato', param('id').isInt(), async (req, res) => {
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'inline; filename="contrato-servicio.pdf"');
+  res.sendFile(rutaAbsoluta);
+});
+
+// POST /api/vehiculos/:id/imagen — sube una foto del vehículo (JPG/PNG/WEBP/GIF)
+router.post('/:id/imagen',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const vehiculo = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!vehiculo) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    uploadImagen.single('imagen')(req, res, async (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el archivo de la imagen' });
+
+      const nuevo = await query(
+        `INSERT INTO flota.ImagenVehiculo (id_vehiculo, tipo, ruta_archivo)
+         OUTPUT INSERTED.id_imagen, INSERTED.fecha_subida
+         VALUES (@id, 'FOTO_VEHICULO', @ruta)`,
+        [
+          { name: 'id',   type: sql.Int,          value: id },
+          { name: 'ruta', type: sql.VarChar(500), value: req.file.filename },
+        ]
+      );
+
+      res.status(201).json(nuevo.recordset[0]);
+    });
+  }
+);
+
+// GET /api/vehiculos/:id/imagen — muestra la foto vigente del vehículo
+router.get('/:id/imagen', param('id').isInt(), async (req, res) => {
+  const imagen = await queryOne(
+    `SELECT TOP 1 ruta_archivo
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'FOTO_VEHICULO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+  if (!imagen) return res.status(404).json({ error: 'Este vehículo no tiene imagen cargada' });
+
+  const rutaAbsoluta = path.join(CARPETA_IMAGENES, path.basename(imagen.ruta_archivo));
+  if (!fs.existsSync(rutaAbsoluta)) return res.status(404).json({ error: 'El archivo de la imagen no se encuentra en el servidor' });
+
+  const contentType = CONTENT_TYPE_POR_EXTENSION[path.extname(rutaAbsoluta).toLowerCase()] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
   res.sendFile(rutaAbsoluta);
 });
 
