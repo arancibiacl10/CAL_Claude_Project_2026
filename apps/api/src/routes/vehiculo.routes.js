@@ -1,9 +1,12 @@
+const fs   = require('fs');
+const path = require('path');
 const router = require('express').Router();
 const { body, param, query: qv, validationResult } = require('express-validator');
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
 const { validarRut, formatearRut } = require('../utils/rut');
 const { validarPatente, formatearPatente } = require('../utils/patente');
+const { uploadContrato, CARPETA_CONTRATOS } = require('../middleware/uploadContrato');
 
 router.use(authenticate);
 
@@ -68,7 +71,20 @@ router.get('/:id', param('id').isInt(), async (req, res) => {
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
 
-  res.json({ ...vehiculo, documentos: documentos.recordset, historial: historial.recordset });
+  const contrato = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'CONTRATO_SERVICIO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
+  res.json({
+    ...vehiculo,
+    documentos: documentos.recordset,
+    historial: historial.recordset,
+    contrato_pdf: contrato ? { id_imagen: contrato.id_imagen, fecha_subida: contrato.fecha_subida } : null,
+  });
 });
 
 // POST /api/vehiculos
@@ -228,6 +244,59 @@ router.put('/:id',
     res.json({ ok: true });
   }
 );
+
+// POST /api/vehiculos/:id/contrato — sube el contrato de servicio (PDF)
+router.post('/:id/contrato',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const vehiculo = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!vehiculo) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    uploadContrato.single('contrato')(req, res, async (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el archivo del contrato' });
+
+      const nuevo = await query(
+        `INSERT INTO flota.ImagenVehiculo (id_vehiculo, tipo, ruta_archivo)
+         OUTPUT INSERTED.id_imagen, INSERTED.fecha_subida
+         VALUES (@id, 'CONTRATO_SERVICIO', @ruta)`,
+        [
+          { name: 'id',    type: sql.Int,          value: id },
+          { name: 'ruta',  type: sql.VarChar(500), value: req.file.filename },
+        ]
+      );
+
+      res.status(201).json(nuevo.recordset[0]);
+    });
+  }
+);
+
+// GET /api/vehiculos/:id/contrato — descarga/visualiza el contrato de servicio vigente (PDF)
+router.get('/:id/contrato', param('id').isInt(), async (req, res) => {
+  const contrato = await queryOne(
+    `SELECT TOP 1 ruta_archivo
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'CONTRATO_SERVICIO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+  if (!contrato) return res.status(404).json({ error: 'Este vehículo no tiene contrato de servicio cargado' });
+
+  const rutaAbsoluta = path.join(CARPETA_CONTRATOS, path.basename(contrato.ruta_archivo));
+  if (!fs.existsSync(rutaAbsoluta)) return res.status(404).json({ error: 'El archivo del contrato no se encuentra en el servidor' });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="contrato-servicio.pdf"');
+  res.sendFile(rutaAbsoluta);
+});
 
 // GET /api/vehiculos/vencimientos/proximos
 router.get('/vencimientos/proximos', async (req, res) => {

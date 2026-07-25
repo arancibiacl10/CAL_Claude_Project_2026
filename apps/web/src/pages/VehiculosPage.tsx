@@ -165,7 +165,8 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
   const [idEstado, setIdEstado] = useState('');
   const [fechaIngreso, setFechaIngreso] = useState(hoy());
   const [codigoLinea, setCodigoLinea] = useState('');
-  const [contratoServicio, setContratoServicio] = useState('');
+  const [contratoPdf, setContratoPdf] = useState<File | null>(null);
+  const [contratoError, setContratoError] = useState('');
   const [rutPropietario, setRutPropietario] = useState('');
   const [rutError, setRutError] = useState('');
   const [nombrePropietario, setNombrePropietario] = useState('');
@@ -199,12 +200,11 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
     setSaving(true);
     try {
-      await api.post('/vehiculos', {
+      const { data } = await api.post('/vehiculos', {
         patente: formatearPatente(patente),
         id_estado: Number(idEstado),
         fecha_ingreso: fechaIngreso,
         codigo_linea: codigoLinea || undefined,
-        contrato_servicio: contratoServicio || undefined,
         rut_propietario: rutPropietario ? formatearRut(rutPropietario) : undefined,
         nombre_propietario: nombrePropietario || undefined,
         direccion_propietario: direccionPropietario || undefined,
@@ -215,6 +215,13 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
         revision_tecnica: revisionTecnica || undefined,
         observaciones: observaciones || undefined,
       });
+
+      if (contratoPdf) {
+        const form = new FormData();
+        form.append('contrato', contratoPdf);
+        await api.post(`/vehiculos/${data.id_vehiculo}/contrato`, form);
+      }
+
       onSaved();
     } catch (err: any) {
       setError(err.response?.data?.error ?? 'Error al crear el vehículo');
@@ -263,8 +270,24 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
               <input type="date" className="input" value={fechaIngreso} onChange={(e) => setFechaIngreso(e.target.value)} required />
             </div>
             <div className="col-span-2">
-              <label className="label">Contrato de servicio</label>
-              <input className="input" value={contratoServicio} onChange={(e) => setContratoServicio(e.target.value)} maxLength={255} />
+              <label className="label">Contrato de servicio (PDF)</label>
+              <input
+                type="file"
+                accept="application/pdf"
+                className="input"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  if (file && file.type !== 'application/pdf') {
+                    setContratoError('El contrato debe ser un archivo PDF');
+                    setContratoPdf(null);
+                    e.target.value = '';
+                    return;
+                  }
+                  setContratoError('');
+                  setContratoPdf(file);
+                }}
+              />
+              {contratoError && <p className="text-xs text-red-600 mt-1">{contratoError}</p>}
             </div>
           </div>
         </FormSection>
@@ -333,7 +356,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError || !!patenteError} className="btn-primary">
+          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError || !!patenteError || !!contratoError} className="btn-primary">
             {saving ? 'Guardando...' : 'Crear'}
           </button>
         </div>
@@ -355,6 +378,7 @@ interface VehiculoDetalle {
   rut_propietario: string | null; nombre_propietario: string | null;
   direccion_propietario: string | null; telefono_propietario: string | null; email_propietario: string | null;
   documentos: DocumentoVehiculo[]; historial: HistorialEstado[];
+  contrato_pdf: { id_imagen: number; fecha_subida: string } | null;
 }
 
 const TIPO_DOC_LABEL: Record<string, string> = {
@@ -368,7 +392,37 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
   const [motivo, setMotivo] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [subiendoContrato, setSubiendoContrato] = useState(false);
+  const [contratoError, setContratoError] = useState('');
   const queryClient = useQueryClient();
+
+  async function handleVerContrato() {
+    const res = await api.get(`/vehiculos/${id}/contrato`, { responseType: 'blob' });
+    const url = URL.createObjectURL(res.data);
+    window.open(url, '_blank');
+  }
+
+  async function handleSubirContrato(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      setContratoError('El contrato debe ser un archivo PDF');
+      return;
+    }
+    setContratoError('');
+    setSubiendoContrato(true);
+    try {
+      const form = new FormData();
+      form.append('contrato', file);
+      await api.post(`/vehiculos/${id}/contrato`, form);
+      queryClient.invalidateQueries({ queryKey: ['vehiculo-detalle', id] });
+    } catch (err: any) {
+      setContratoError(err.response?.data?.error ?? 'Error al subir el contrato');
+    } finally {
+      setSubiendoContrato(false);
+    }
+  }
 
   const { data: vehiculo, isLoading } = useQuery({
     queryKey: ['vehiculo-detalle', id],
@@ -412,7 +466,21 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
               <div><span className="text-gray-400">Código línea</span><br />{vehiculo.codigo_linea ?? '—'}</div>
               <div><span className="text-gray-400">Fecha ingreso</span><br />{new Date(vehiculo.fecha_ingreso).toLocaleDateString('es-CL')}</div>
               <div><span className="text-gray-400">Fecha retiro</span><br />{vehiculo.fecha_retiro ? new Date(vehiculo.fecha_retiro).toLocaleDateString('es-CL') : '—'}</div>
-              <div className="col-span-2"><span className="text-gray-400">Contrato de servicio</span><br />{vehiculo.contrato_servicio ?? '—'}</div>
+              <div className="col-span-2">
+                <span className="text-gray-400">Contrato de servicio</span><br />
+                {vehiculo.contrato_pdf ? (
+                  <button type="button" onClick={handleVerContrato} className="text-brand-600 hover:text-brand-800 text-xs font-medium">
+                    📄 Ver contrato (PDF)
+                  </button>
+                ) : (
+                  <span className="text-gray-500 text-xs">{vehiculo.contrato_servicio ?? 'Sin contrato cargado'}</span>
+                )}
+                <label className="block mt-1 text-xs text-brand-600 hover:text-brand-800 cursor-pointer font-medium">
+                  {subiendoContrato ? 'Subiendo...' : vehiculo.contrato_pdf ? 'Reemplazar PDF' : 'Subir contrato (PDF)'}
+                  <input type="file" accept="application/pdf" className="hidden" disabled={subiendoContrato} onChange={handleSubirContrato} />
+                </label>
+                {contratoError && <p className="text-xs text-red-600 mt-1">{contratoError}</p>}
+              </div>
               {vehiculo.observaciones && (
                 <div className="col-span-2"><span className="text-gray-400">Observaciones</span><br />{vehiculo.observaciones}</div>
               )}
