@@ -4,6 +4,7 @@ const router = require('express').Router();
 const { body, param, validationResult } = require('express-validator');
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
+const { getPool } = require('../db/connection');
 const { validarRut, formatearRut } = require('../utils/rut');
 const { uploadImagenConductor, CARPETA_IMAGENES_CONDUCTOR } = require('../middleware/uploadImagenConductor');
 
@@ -209,6 +210,111 @@ router.put('/:id',
         { name: 'id',            type: sql.Int,          value: id },
       ]
     );
+
+    res.json({ ok: true });
+  }
+);
+
+// POST /api/conductores/:id/retirar
+router.post('/:id/retirar',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  body('fecha_retiro').optional().isISO8601(),
+  body('obs_retiro').optional().trim(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const { fecha_retiro, obs_retiro } = req.body;
+
+    const existe = await queryOne(
+      `SELECT id_conductor FROM flota.Conductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Conductor no encontrado' });
+
+    await query(
+      `UPDATE flota.Conductor SET fecha_retiro = @fr, obs_retiro = @obs WHERE id_conductor = @id`,
+      [
+        { name: 'fr',  type: sql.Date,         value: fecha_retiro || new Date().toISOString().slice(0, 10) },
+        { name: 'obs', type: sql.VarChar(500), value: obs_retiro || null },
+        { name: 'id',  type: sql.Int,          value: id },
+      ]
+    );
+
+    res.json({ ok: true });
+  }
+);
+
+// POST /api/conductores/:id/reactivar
+router.post('/:id/reactivar',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const existe = await queryOne(
+      `SELECT id_conductor FROM flota.Conductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Conductor no encontrado' });
+
+    await query(
+      `UPDATE flota.Conductor SET fecha_retiro = NULL, obs_retiro = NULL WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+
+    res.json({ ok: true });
+  }
+);
+
+// DELETE /api/conductores/:id — eliminación permanente (irreversible)
+router.delete('/:id',
+  authorize('ADMIN'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const existe = await queryOne(
+      `SELECT id_conductor FROM flota.Conductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Conductor no encontrado' });
+
+    const imagenes = await query(
+      `SELECT ruta_archivo FROM flota.ImagenConductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+
+    const tx = new sql.Transaction(getPool());
+    try {
+      await tx.begin();
+      for (const tabla of ['flota.ImagenConductor', 'flota.LicenciaConductor', 'flota.AsignacionVehiculoConductor']) {
+        const r = new sql.Request(tx);
+        r.input('id', sql.Int, id);
+        await r.query(`DELETE FROM ${tabla} WHERE id_conductor = @id`);
+      }
+      const rFinal = new sql.Request(tx);
+      rFinal.input('id', sql.Int, id);
+      await rFinal.query(`DELETE FROM flota.Conductor WHERE id_conductor = @id`);
+      await tx.commit();
+    } catch (err) {
+      await tx.rollback();
+      if (err.number === 547) {
+        return res.status(409).json({ error: 'No se puede eliminar: tiene historial operativo asociado (hoja de ruta, control, recaudación o pagos). Use "Retirar" en su lugar.' });
+      }
+      throw err;
+    }
+
+    for (const img of imagenes.recordset) {
+      const rutaAbsoluta = path.join(CARPETA_IMAGENES_CONDUCTOR, path.basename(img.ruta_archivo));
+      if (fs.existsSync(rutaAbsoluta)) fs.unlinkSync(rutaAbsoluta);
+    }
 
     res.json({ ok: true });
   }

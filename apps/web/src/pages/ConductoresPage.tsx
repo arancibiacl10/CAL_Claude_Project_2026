@@ -123,7 +123,11 @@ export default function ConductoresPage() {
       )}
 
       {detalleId !== null && (
-        <DetalleConductorModal id={detalleId} onClose={() => setDetalleId(null)} />
+        <DetalleConductorModal
+          id={detalleId}
+          onClose={() => setDetalleId(null)}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: ['conductores'] })}
+        />
       )}
     </div>
   );
@@ -355,19 +359,120 @@ interface ConductorDetalle {
   foto_licencia: { id_imagen: number; fecha_subida: string } | null;
 }
 
-function DetalleConductorModal({ id, onClose }: { id: number; onClose: () => void }) {
+function DetalleConductorModal({ id, onClose, onChanged }: { id: number; onClose: () => void; onChanged: () => void }) {
   const [subiendoFotoConductor, setSubiendoFotoConductor] = useState(false);
   const [subiendoFotoLicencia, setSubiendoFotoLicencia] = useState(false);
   const [fotoConductorError, setFotoConductorError] = useState('');
   const [fotoLicenciaError, setFotoLicenciaError] = useState('');
   const [fotoConductorUrl, setFotoConductorUrl] = useState<string | null>(null);
   const [fotoLicenciaUrl, setFotoLicenciaUrl] = useState<string | null>(null);
+
+  const [editando, setEditando] = useState(false);
+  const [editNombre, setEditNombre] = useState('');
+  const [editApellidoPaterno, setEditApellidoPaterno] = useState('');
+  const [editApellidoMaterno, setEditApellidoMaterno] = useState('');
+  const [editTelefono, setEditTelefono] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editDireccion, setEditDireccion] = useState('');
+  const [editObservaciones, setEditObservaciones] = useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const [mostrarRetiro, setMostrarRetiro] = useState(false);
+  const [motivoRetiro, setMotivoRetiro] = useState('');
+  const [procesandoRetiro, setProcesandoRetiro] = useState(false);
+  const [retiroError, setRetiroError] = useState('');
+
+  const [mostrarConfirmEliminar, setMostrarConfirmEliminar] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+  const [eliminarError, setEliminarError] = useState('');
+
   const queryClient = useQueryClient();
 
   const { data: conductor, isLoading } = useQuery({
     queryKey: ['conductor-detalle', id],
     queryFn:  () => api.get(`/conductores/${id}`).then((r) => r.data as ConductorDetalle),
   });
+
+  function iniciarEdicion() {
+    if (!conductor) return;
+    setEditNombre(conductor.nombre);
+    setEditApellidoPaterno(conductor.apellido_paterno ?? '');
+    setEditApellidoMaterno(conductor.apellido_materno ?? '');
+    setEditTelefono(conductor.telefono ?? '');
+    setEditEmail(conductor.email ?? '');
+    setEditDireccion(conductor.direccion ?? '');
+    setEditObservaciones(conductor.observaciones ?? '');
+    setEditError('');
+    setEditando(true);
+  }
+
+  async function handleGuardarEdicion(e: React.FormEvent) {
+    e.preventDefault();
+    setEditError('');
+    setGuardandoEdicion(true);
+    try {
+      await api.put(`/conductores/${id}`, {
+        nombre: editNombre,
+        apellido_paterno: editApellidoPaterno || undefined,
+        apellido_materno: editApellidoMaterno || undefined,
+        telefono: editTelefono || undefined,
+        email: editEmail || undefined,
+        direccion: editDireccion || undefined,
+        observaciones: editObservaciones || undefined,
+      });
+      setEditando(false);
+      queryClient.invalidateQueries({ queryKey: ['conductor-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setEditError(err.response?.data?.error ?? 'Error al guardar los cambios');
+    } finally {
+      setGuardandoEdicion(false);
+    }
+  }
+
+  async function handleRetirar() {
+    setRetiroError('');
+    setProcesandoRetiro(true);
+    try {
+      await api.post(`/conductores/${id}/retirar`, { obs_retiro: motivoRetiro || undefined });
+      setMostrarRetiro(false);
+      setMotivoRetiro('');
+      queryClient.invalidateQueries({ queryKey: ['conductor-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setRetiroError(err.response?.data?.error ?? 'Error al retirar al conductor');
+    } finally {
+      setProcesandoRetiro(false);
+    }
+  }
+
+  async function handleReactivar() {
+    setRetiroError('');
+    setProcesandoRetiro(true);
+    try {
+      await api.post(`/conductores/${id}/reactivar`);
+      queryClient.invalidateQueries({ queryKey: ['conductor-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setRetiroError(err.response?.data?.error ?? 'Error al reactivar al conductor');
+    } finally {
+      setProcesandoRetiro(false);
+    }
+  }
+
+  async function handleEliminar() {
+    setEliminarError('');
+    setEliminando(true);
+    try {
+      await api.delete(`/conductores/${id}`);
+      onChanged();
+      onClose();
+    } catch (err: any) {
+      setEliminarError(err.response?.data?.error ?? 'Error al eliminar el conductor');
+      setEliminando(false);
+    }
+  }
 
   useEffect(() => {
     if (!conductor?.foto_conductor) { setFotoConductorUrl(null); return; }
@@ -419,37 +524,82 @@ function DetalleConductorModal({ id, onClose }: { id: number; onClose: () => voi
       ) : (
         <div className="space-y-5">
           <FormSection title="Datos personales">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div><span className="text-gray-400">RUT</span><br />{conductor.rut}</div>
-              <div><span className="text-gray-400">Estado</span><br />
-                <span className={conductor.activo ? 'badge-green' : 'badge-gray'}>{conductor.activo ? 'Activo' : 'Retirado'}</span>
-              </div>
-              <div><span className="text-gray-400">Nombre completo</span><br />
-                {conductor.nombre} {conductor.apellido_paterno} {conductor.apellido_materno}
-              </div>
-              <div><span className="text-gray-400">Teléfono</span><br />{conductor.telefono ?? '—'}</div>
-              <div><span className="text-gray-400">Email</span><br />{conductor.email ?? '—'}</div>
-              <div><span className="text-gray-400">Fecha ingreso</span><br />
-                {conductor.fecha_ingreso ? new Date(conductor.fecha_ingreso).toLocaleDateString('es-CL') : '—'}
-              </div>
-              <div className="col-span-2"><span className="text-gray-400">Dirección</span><br />{conductor.direccion ?? '—'}</div>
-              {conductor.observaciones && (
-                <div className="col-span-2"><span className="text-gray-400">Observaciones</span><br />{conductor.observaciones}</div>
-              )}
-              <div className="col-span-2">
-                <span className="text-gray-400">Foto del conductor</span><br />
-                {fotoConductorUrl ? (
-                  <img src={fotoConductorUrl} alt={`Foto de ${conductor.nombre}`} className="mt-1 max-h-40 rounded-lg border border-gray-200" />
-                ) : (
-                  <span className="text-gray-500 text-xs">Sin foto cargada</span>
+            {editando ? (
+              <form onSubmit={handleGuardarEdicion} className="space-y-4">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
+                  <div>
+                    <label className="label">Nombre</label>
+                    <input className="input" value={editNombre} onChange={(e) => setEditNombre(e.target.value)} maxLength={150} required />
+                  </div>
+                  <div>
+                    <label className="label">Apellido paterno</label>
+                    <input className="input" value={editApellidoPaterno} onChange={(e) => setEditApellidoPaterno(e.target.value)} maxLength={100} />
+                  </div>
+                  <div>
+                    <label className="label">Apellido materno</label>
+                    <input className="input" value={editApellidoMaterno} onChange={(e) => setEditApellidoMaterno(e.target.value)} maxLength={100} />
+                  </div>
+                  <div>
+                    <label className="label">Teléfono</label>
+                    <input className="input" value={editTelefono} onChange={(e) => setEditTelefono(e.target.value)} maxLength={20} />
+                  </div>
+                  <div>
+                    <label className="label">Email</label>
+                    <input type="email" className="input" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={150} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label">Dirección</label>
+                    <input className="input" value={editDireccion} onChange={(e) => setEditDireccion(e.target.value)} maxLength={300} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label">Observaciones</label>
+                    <textarea className="input" rows={2} value={editObservaciones} onChange={(e) => setEditObservaciones(e.target.value)} maxLength={500} />
+                  </div>
+                </div>
+                {editError && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2">{editError}</div>}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={() => setEditando(false)}>Cancelar</button>
+                  <button type="submit" disabled={guardandoEdicion || !editNombre} className="btn-primary text-xs">
+                    {guardandoEdicion ? 'Guardando...' : 'Guardar cambios'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div><span className="text-gray-400">RUT</span><br />{conductor.rut}</div>
+                <div><span className="text-gray-400">Estado</span><br />
+                  <span className={conductor.activo ? 'badge-green' : 'badge-gray'}>{conductor.activo ? 'Activo' : 'Retirado'}</span>
+                </div>
+                <div><span className="text-gray-400">Nombre completo</span><br />
+                  {conductor.nombre} {conductor.apellido_paterno} {conductor.apellido_materno}
+                </div>
+                <div><span className="text-gray-400">Teléfono</span><br />{conductor.telefono ?? '—'}</div>
+                <div><span className="text-gray-400">Email</span><br />{conductor.email ?? '—'}</div>
+                <div><span className="text-gray-400">Fecha ingreso</span><br />
+                  {conductor.fecha_ingreso ? new Date(conductor.fecha_ingreso).toLocaleDateString('es-CL') : '—'}
+                </div>
+                <div className="col-span-2"><span className="text-gray-400">Dirección</span><br />{conductor.direccion ?? '—'}</div>
+                {conductor.observaciones && (
+                  <div className="col-span-2"><span className="text-gray-400">Observaciones</span><br />{conductor.observaciones}</div>
                 )}
-                <label className="block mt-1 text-xs text-brand-600 hover:text-brand-800 cursor-pointer font-medium">
-                  {subiendoFotoConductor ? 'Subiendo...' : conductor.foto_conductor ? 'Reemplazar foto' : 'Subir foto'}
-                  <input type="file" accept="image/*" className="hidden" disabled={subiendoFotoConductor} onChange={(e) => handleSubirFoto('FOTO_CONDUCTOR', e)} />
-                </label>
-                {fotoConductorError && <p className="text-xs text-red-600 mt-1">{fotoConductorError}</p>}
+                <div className="col-span-2">
+                  <span className="text-gray-400">Foto del conductor</span><br />
+                  {fotoConductorUrl ? (
+                    <img src={fotoConductorUrl} alt={`Foto de ${conductor.nombre}`} className="mt-1 max-h-40 rounded-lg border border-gray-200" />
+                  ) : (
+                    <span className="text-gray-500 text-xs">Sin foto cargada</span>
+                  )}
+                  <label className="block mt-1 text-xs text-brand-600 hover:text-brand-800 cursor-pointer font-medium">
+                    {subiendoFotoConductor ? 'Subiendo...' : conductor.foto_conductor ? 'Reemplazar foto' : 'Subir foto'}
+                    <input type="file" accept="image/*" className="hidden" disabled={subiendoFotoConductor} onChange={(e) => handleSubirFoto('FOTO_CONDUCTOR', e)} />
+                  </label>
+                  {fotoConductorError && <p className="text-xs text-red-600 mt-1">{fotoConductorError}</p>}
+                </div>
+                <div className="col-span-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={iniciarEdicion}>Editar datos</button>
+                </div>
               </div>
-            </div>
+            )}
           </FormSection>
 
           <FormSection title="Licencia">
@@ -496,6 +646,64 @@ function DetalleConductorModal({ id, onClose }: { id: number; onClose: () => voi
                 ))}
               </div>
             )}
+          </FormSection>
+
+          <FormSection title="Baja del conductor">
+            {mostrarRetiro ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="label">Motivo (opcional)</label>
+                  <input className="input" value={motivoRetiro} onChange={(e) => setMotivoRetiro(e.target.value)} maxLength={500} />
+                </div>
+                {retiroError && <p className="text-xs text-red-600">{retiroError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={() => { setMostrarRetiro(false); setMotivoRetiro(''); }}>Cancelar</button>
+                  <button type="button" disabled={procesandoRetiro} onClick={handleRetirar} className="btn-danger text-xs">
+                    {procesandoRetiro ? 'Retirando...' : 'Confirmar retiro'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-500">
+                  {conductor.activo
+                    ? 'Marca al conductor como retirado. Es reversible: podés reactivarlo cuando quieras.'
+                    : 'El conductor está retirado. Podés reactivarlo para que vuelva a estar disponible.'}
+                </p>
+                {conductor.activo ? (
+                  <button type="button" className="btn-secondary text-xs shrink-0 ml-3" onClick={() => setMostrarRetiro(true)}>Retirar</button>
+                ) : (
+                  <button type="button" disabled={procesandoRetiro} className="btn-secondary text-xs shrink-0 ml-3" onClick={handleReactivar}>
+                    {procesandoRetiro ? 'Reactivando...' : 'Reactivar'}
+                  </button>
+                )}
+              </div>
+            )}
+            {!mostrarRetiro && retiroError && <p className="text-xs text-red-600 mt-2">{retiroError}</p>}
+
+            <div className="border-t border-gray-200 mt-4 pt-4">
+              {mostrarConfirmEliminar ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    Esta acción no se puede deshacer: se borrará el conductor junto con su historial de licencias y fotos.
+                  </p>
+                  {eliminarError && <p className="text-xs text-red-600">{eliminarError}</p>}
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="btn-secondary text-xs" onClick={() => setMostrarConfirmEliminar(false)}>Cancelar</button>
+                    <button type="button" disabled={eliminando} onClick={handleEliminar} className="btn-danger text-xs">
+                      {eliminando ? 'Eliminando...' : 'Sí, eliminar definitivamente'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">Elimina el registro por completo. Úsalo solo para datos cargados por error.</p>
+                  <button type="button" className="text-xs text-red-600 hover:text-red-800 font-medium shrink-0 ml-3" onClick={() => setMostrarConfirmEliminar(true)}>
+                    Eliminar definitivamente
+                  </button>
+                </div>
+              )}
+            </div>
           </FormSection>
 
           <div className="flex justify-end pt-2">
