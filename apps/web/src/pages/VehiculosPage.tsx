@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../lib/api';
+import { validarRut, formatearRut } from '../lib/rut';
 
 interface Vehiculo {
   id_vehiculo: number; patente: string; estado: string; estado_desc: string;
@@ -164,6 +165,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
   const [codigoLinea, setCodigoLinea] = useState('');
   const [contratoServicio, setContratoServicio] = useState('');
   const [rutPropietario, setRutPropietario] = useState('');
+  const [rutError, setRutError] = useState('');
   const [nombrePropietario, setNombrePropietario] = useState('');
   const [direccionPropietario, setDireccionPropietario] = useState('');
   const [telefonoPropietario, setTelefonoPropietario] = useState('');
@@ -183,6 +185,12 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+
+    if (rutPropietario && !validarRut(rutPropietario)) {
+      setRutError('RUT inválido');
+      return;
+    }
+
     setSaving(true);
     try {
       await api.post('/vehiculos', {
@@ -191,7 +199,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
         fecha_ingreso: fechaIngreso,
         codigo_linea: codigoLinea || undefined,
         contrato_servicio: contratoServicio || undefined,
-        rut_propietario: rutPropietario || undefined,
+        rut_propietario: rutPropietario ? formatearRut(rutPropietario) : undefined,
         nombre_propietario: nombrePropietario || undefined,
         direccion_propietario: direccionPropietario || undefined,
         telefono_propietario: telefonoPropietario || undefined,
@@ -273,7 +281,19 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">RUT</label>
-              <input className="input" value={rutPropietario} onChange={(e) => setRutPropietario(e.target.value)} maxLength={12} />
+              <input
+                className="input"
+                value={rutPropietario}
+                onChange={(e) => { setRutPropietario(e.target.value); setRutError(''); }}
+                onBlur={() => {
+                  if (!rutPropietario) return;
+                  if (!validarRut(rutPropietario)) setRutError('RUT inválido');
+                  else setRutPropietario(formatearRut(rutPropietario));
+                }}
+                placeholder="12345678-9"
+                maxLength={12}
+              />
+              {rutError && <p className="text-xs text-red-600 mt-1">{rutError}</p>}
             </div>
             <div>
               <label className="label">Teléfono</label>
@@ -300,7 +320,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button type="submit" disabled={saving || !patente || !idEstado} className="btn-primary">
+          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError} className="btn-primary">
             {saving ? 'Guardando...' : 'Crear'}
           </button>
         </div>

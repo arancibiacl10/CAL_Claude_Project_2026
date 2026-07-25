@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { body, param, query: qv, validationResult } = require('express-validator');
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
+const { validarRut, formatearRut } = require('../utils/rut');
 
 router.use(authenticate);
 
@@ -75,7 +76,8 @@ router.post('/',
   body('patente').notEmpty().trim().toUpperCase(),
   body('id_estado').isInt({ min: 1 }),
   body('fecha_ingreso').isISO8601(),
-  body('rut_propietario').optional().trim(),
+  body('rut_propietario').optional({ checkFalsy: true }).trim()
+    .custom((value) => validarRut(value)).withMessage('RUT de propietario inválido'),
   body('nombre_propietario').optional().trim(),
   body('direccion_propietario').optional().trim(),
   body('telefono_propietario').optional().trim(),
@@ -99,9 +101,10 @@ router.post('/',
 
     let id_propietario = null;
     if (rut_propietario) {
+      const rutNormalizado = formatearRut(rut_propietario);
       const existente = await queryOne(
         `SELECT id_propietario FROM flota.Propietario WHERE rut = @rut`,
-        [{ name: 'rut', type: sql.VarChar(12), value: rut_propietario }]
+        [{ name: 'rut', type: sql.VarChar(12), value: rutNormalizado }]
       );
       if (existente) {
         id_propietario = existente.id_propietario;
@@ -111,8 +114,8 @@ router.post('/',
            OUTPUT INSERTED.id_propietario
            VALUES (@rut, @nombre, @direccion, @telefono, @email)`,
           [
-            { name: 'rut',       type: sql.VarChar(12),  value: rut_propietario },
-            { name: 'nombre',    type: sql.VarChar(150), value: nombre_propietario || rut_propietario },
+            { name: 'rut',       type: sql.VarChar(12),  value: rutNormalizado },
+            { name: 'nombre',    type: sql.VarChar(150), value: nombre_propietario || rutNormalizado },
             { name: 'direccion', type: sql.VarChar(300), value: direccion_propietario || null },
             { name: 'telefono',  type: sql.VarChar(20),  value: telefono_propietario || null },
             { name: 'email',     type: sql.VarChar(150), value: email_propietario || null },
