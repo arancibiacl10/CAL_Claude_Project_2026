@@ -41,9 +41,13 @@ router.get('/', async (req, res) => {
 // GET /api/vehiculos/:id
 router.get('/:id', param('id').isInt(), async (req, res) => {
   const vehiculo = await queryOne(
-    `SELECT v.*, e.codigo AS estado, e.descripcion AS estado_desc
+    `SELECT v.*, e.codigo AS estado, e.descripcion AS estado_desc,
+            p.rut AS rut_propietario, p.nombre AS nombre_propietario,
+            p.direccion AS direccion_propietario, p.telefono AS telefono_propietario,
+            p.email AS email_propietario
      FROM flota.Vehiculo v
      JOIN config.EstadoVehiculo e ON e.id_estado = v.id_estado
+     LEFT JOIN flota.Propietario p ON p.id_propietario = v.id_propietario
      WHERE v.id_vehiculo = @id`,
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
@@ -71,26 +75,97 @@ router.post('/',
   body('patente').notEmpty().trim().toUpperCase(),
   body('id_estado').isInt({ min: 1 }),
   body('fecha_ingreso').isISO8601(),
+  body('rut_propietario').optional().trim(),
+  body('nombre_propietario').optional().trim(),
+  body('direccion_propietario').optional().trim(),
+  body('telefono_propietario').optional().trim(),
+  body('email_propietario').optional({ checkFalsy: true }).isEmail(),
+  body('codigo_linea').optional().trim(),
+  body('contrato_servicio').optional().trim(),
+  body('observaciones').optional().trim(),
+  body('permiso_circulacion').optional().isISO8601(),
+  body('seguro_obligatorio').optional().isISO8601(),
+  body('revision_tecnica').optional().isISO8601(),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { patente, id_estado, fecha_ingreso, obs_retiro } = req.body;
+    const {
+      patente, id_estado, fecha_ingreso, obs_retiro, observaciones,
+      rut_propietario, nombre_propietario, direccion_propietario,
+      telefono_propietario, email_propietario, codigo_linea, contrato_servicio,
+      permiso_circulacion, seguro_obligatorio, revision_tecnica,
+    } = req.body;
+
+    let id_propietario = null;
+    if (rut_propietario) {
+      const existente = await queryOne(
+        `SELECT id_propietario FROM flota.Propietario WHERE rut = @rut`,
+        [{ name: 'rut', type: sql.VarChar(12), value: rut_propietario }]
+      );
+      if (existente) {
+        id_propietario = existente.id_propietario;
+      } else {
+        const nuevo = await query(
+          `INSERT INTO flota.Propietario (rut, nombre, direccion, telefono, email)
+           OUTPUT INSERTED.id_propietario
+           VALUES (@rut, @nombre, @direccion, @telefono, @email)`,
+          [
+            { name: 'rut',       type: sql.VarChar(12),  value: rut_propietario },
+            { name: 'nombre',    type: sql.VarChar(150), value: nombre_propietario || rut_propietario },
+            { name: 'direccion', type: sql.VarChar(300), value: direccion_propietario || null },
+            { name: 'telefono',  type: sql.VarChar(20),  value: telefono_propietario || null },
+            { name: 'email',     type: sql.VarChar(150), value: email_propietario || null },
+          ]
+        );
+        id_propietario = nuevo.recordset[0].id_propietario;
+      }
+    }
 
     const result = await query(
-      `INSERT INTO flota.Vehiculo (patente, id_estado, fecha_ingreso, obs_retiro, id_usuario_reg)
+      `INSERT INTO flota.Vehiculo (
+         patente, id_estado, fecha_ingreso, obs_retiro, observaciones, id_usuario_reg,
+         id_propietario, codigo_linea, contrato_servicio
+       )
        OUTPUT INSERTED.id_vehiculo
-       VALUES (@patente, @id_estado, @fecha_ingreso, @obs, @usr)`,
+       VALUES (
+         @patente, @id_estado, @fecha_ingreso, @obs, @observaciones, @usr,
+         @idPropietario, @codigoLinea, @contratoServicio
+       )`,
       [
         { name: 'patente',       type: sql.VarChar(10),  value: patente },
         { name: 'id_estado',     type: sql.TinyInt,      value: id_estado },
         { name: 'fecha_ingreso', type: sql.Date,         value: fecha_ingreso },
         { name: 'obs',           type: sql.VarChar(500), value: obs_retiro ?? null },
+        { name: 'observaciones', type: sql.VarChar(500), value: observaciones ?? null },
         { name: 'usr',           type: sql.Int,          value: req.user.id },
+        { name: 'idPropietario',    type: sql.Int,          value: id_propietario },
+        { name: 'codigoLinea',      type: sql.VarChar(20),  value: codigo_linea || null },
+        { name: 'contratoServicio', type: sql.VarChar(255), value: contrato_servicio || null },
       ]
     );
 
-    res.status(201).json({ id_vehiculo: result.recordset[0].id_vehiculo });
+    const id_vehiculo = result.recordset[0].id_vehiculo;
+
+    const documentos = [
+      { tipo: 'PERMISO_CIRCULACION', fecha: permiso_circulacion },
+      { tipo: 'SEGURO_OBLIGATORIO',  fecha: seguro_obligatorio },
+      { tipo: 'REVISION_TECNICA',    fecha: revision_tecnica },
+    ].filter((d) => d.fecha);
+
+    for (const doc of documentos) {
+      await query(
+        `INSERT INTO flota.DocumentoVehiculo (id_vehiculo, tipo_documento, fecha_vencimiento)
+         VALUES (@id, @tipo, @fecha)`,
+        [
+          { name: 'id',    type: sql.Int,         value: id_vehiculo },
+          { name: 'tipo',  type: sql.VarChar(30), value: doc.tipo },
+          { name: 'fecha', type: sql.Date,        value: doc.fecha },
+        ]
+      );
+    }
+
+    res.status(201).json({ id_vehiculo });
   }
 );
 
