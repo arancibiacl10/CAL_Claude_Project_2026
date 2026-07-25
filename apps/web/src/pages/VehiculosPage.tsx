@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../lib/api';
 import { validarRut, formatearRut } from '../lib/rut';
+import { validarPatente, formatearPatente } from '../lib/patente';
 
 interface Vehiculo {
   id_vehiculo: number; patente: string; estado: string; estado_desc: string;
@@ -160,6 +161,7 @@ function FormSection({ title, children }: { title: string; children: React.React
 
 function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [patente, setPatente] = useState('');
+  const [patenteError, setPatenteError] = useState('');
   const [idEstado, setIdEstado] = useState('');
   const [fechaIngreso, setFechaIngreso] = useState(hoy());
   const [codigoLinea, setCodigoLinea] = useState('');
@@ -186,6 +188,10 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
     e.preventDefault();
     setError('');
 
+    if (!validarPatente(patente)) {
+      setPatenteError('Patente inválida (formato esperado: LLLL-NN)');
+      return;
+    }
     if (rutPropietario && !validarRut(rutPropietario)) {
       setRutError('RUT inválido');
       return;
@@ -194,7 +200,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
     setSaving(true);
     try {
       await api.post('/vehiculos', {
-        patente: patente.trim().toUpperCase(),
+        patente: formatearPatente(patente),
         id_estado: Number(idEstado),
         fecha_ingreso: fechaIngreso,
         codigo_linea: codigoLinea || undefined,
@@ -227,10 +233,17 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
               <input
                 className="input font-mono uppercase"
                 value={patente}
-                onChange={(e) => setPatente(e.target.value)}
+                onChange={(e) => { setPatente(e.target.value); setPatenteError(''); }}
+                onBlur={() => {
+                  if (!patente) return;
+                  if (!validarPatente(patente)) setPatenteError('Patente inválida (formato esperado: LLLL-NN)');
+                  else setPatente(formatearPatente(patente));
+                }}
+                placeholder="BXSH-97"
                 maxLength={10}
                 required
               />
+              {patenteError && <p className="text-xs text-red-600 mt-1">{patenteError}</p>}
             </div>
             <div>
               <label className="label">Código línea</label>
@@ -320,7 +333,7 @@ function NuevoVehiculoModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError} className="btn-primary">
+          <button type="submit" disabled={saving || !patente || !idEstado || !!rutError || !!patenteError} className="btn-primary">
             {saving ? 'Guardando...' : 'Crear'}
           </button>
         </div>

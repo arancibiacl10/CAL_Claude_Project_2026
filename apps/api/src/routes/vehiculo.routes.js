@@ -3,6 +3,7 @@ const { body, param, query: qv, validationResult } = require('express-validator'
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
 const { validarRut, formatearRut } = require('../utils/rut');
+const { validarPatente, formatearPatente } = require('../utils/patente');
 
 router.use(authenticate);
 
@@ -73,7 +74,8 @@ router.get('/:id', param('id').isInt(), async (req, res) => {
 // POST /api/vehiculos
 router.post('/',
   authorize('ADMIN', 'OPERADOR'),
-  body('patente').notEmpty().trim().toUpperCase(),
+  body('patente').notEmpty().trim().toUpperCase()
+    .custom((value) => validarPatente(value)).withMessage('Patente inválida (formato esperado: LLLL-NN)'),
   body('id_estado').isInt({ min: 1 }),
   body('fecha_ingreso').isISO8601(),
   body('rut_propietario').optional({ checkFalsy: true }).trim()
@@ -98,6 +100,8 @@ router.post('/',
       telefono_propietario, email_propietario, codigo_linea, contrato_servicio,
       permiso_circulacion, seguro_obligatorio, revision_tecnica,
     } = req.body;
+
+    const patenteNormalizada = formatearPatente(patente);
 
     let id_propietario = null;
     if (rut_propietario) {
@@ -136,7 +140,7 @@ router.post('/',
          @idPropietario, @codigoLinea, @contratoServicio
        )`,
       [
-        { name: 'patente',       type: sql.VarChar(10),  value: patente },
+        { name: 'patente',       type: sql.VarChar(10),  value: patenteNormalizada },
         { name: 'id_estado',     type: sql.TinyInt,      value: id_estado },
         { name: 'fecha_ingreso', type: sql.Date,         value: fecha_ingreso },
         { name: 'obs',           type: sql.VarChar(500), value: obs_retiro ?? null },
