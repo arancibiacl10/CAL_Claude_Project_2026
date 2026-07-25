@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useDebounce } from '../hooks/useDebounce';
 import api from '../lib/api';
 import { validarRut, formatearRut } from '../lib/rut';
 import { validarPatente, formatearPatente } from '../lib/patente';
@@ -21,15 +22,17 @@ const BADGE: Record<string, string> = {
 const hoy = () => new Date().toISOString().slice(0, 10);
 
 export default function VehiculosPage() {
+  const [busqueda, setBusqueda] = useState('');
   const [soloActivos, setSoloActivos] = useState(true);
   const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [detalleId, setDetalleId] = useState<number | null>(null);
+  const q = useDebounce(busqueda, 300);
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
-    queryKey: ['vehiculos', soloActivos, page],
-    queryFn:  () => api.get(`/vehiculos?activos=${soloActivos}&page=${page}&pageSize=20`).then((r) => r.data),
+    queryKey: ['vehiculos', q, soloActivos, page],
+    queryFn:  () => api.get(`/vehiculos?q=${q}&activos=${soloActivos}&page=${page}&pageSize=20`).then((r) => r.data),
   });
 
   return (
@@ -43,7 +46,13 @@ export default function VehiculosPage() {
       </div>
 
       <div className="card">
-        <div className="flex items-center gap-4 mb-4">
+        <div className="flex items-center gap-4 mb-4 flex-wrap">
+          <input
+            className="input max-w-xs"
+            placeholder="Buscar por patente…"
+            value={busqueda}
+            onChange={(e) => { setBusqueda(e.target.value); setPage(1); }}
+          />
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
             <input
               type="checkbox"
@@ -376,7 +385,7 @@ interface HistorialEstado {
   id_historial: number; estado_nuevo_cod: string; fecha_cambio: string; motivo: string | null;
 }
 interface VehiculoDetalle {
-  id_vehiculo: number; patente: string; id_estado: number; estado: string; estado_desc: string;
+  id_vehiculo: number; patente: string; id_estado: number; estado: string; estado_desc: string; activo: boolean;
   fecha_ingreso: string; fecha_retiro: string | null; codigo_linea: string | null;
   contrato_servicio: string | null; observaciones: string | null;
   rut_propietario: string | null; nombre_propietario: string | null;
@@ -402,6 +411,26 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
   const [subiendoImagen, setSubiendoImagen] = useState(false);
   const [imagenError, setImagenError] = useState('');
   const [imagenUrl, setImagenUrl] = useState<string | null>(null);
+
+  const [editando, setEditando] = useState(false);
+  const [editCodigoLinea, setEditCodigoLinea] = useState('');
+  const [editObservaciones, setEditObservaciones] = useState('');
+  const [editNombrePropietario, setEditNombrePropietario] = useState('');
+  const [editDireccionPropietario, setEditDireccionPropietario] = useState('');
+  const [editTelefonoPropietario, setEditTelefonoPropietario] = useState('');
+  const [editEmailPropietario, setEditEmailPropietario] = useState('');
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const [mostrarRetiro, setMostrarRetiro] = useState(false);
+  const [motivoRetiro, setMotivoRetiro] = useState('');
+  const [procesandoRetiro, setProcesandoRetiro] = useState(false);
+  const [retiroError, setRetiroError] = useState('');
+
+  const [mostrarConfirmEliminar, setMostrarConfirmEliminar] = useState(false);
+  const [eliminando, setEliminando] = useState(false);
+  const [eliminarError, setEliminarError] = useState('');
+
   const queryClient = useQueryClient();
 
   async function handleVerContrato() {
@@ -497,6 +526,83 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
     }
   }
 
+  function iniciarEdicion() {
+    if (!vehiculo) return;
+    setEditCodigoLinea(vehiculo.codigo_linea ?? '');
+    setEditObservaciones(vehiculo.observaciones ?? '');
+    setEditNombrePropietario(vehiculo.nombre_propietario ?? '');
+    setEditDireccionPropietario(vehiculo.direccion_propietario ?? '');
+    setEditTelefonoPropietario(vehiculo.telefono_propietario ?? '');
+    setEditEmailPropietario(vehiculo.email_propietario ?? '');
+    setEditError('');
+    setEditando(true);
+  }
+
+  async function handleGuardarEdicion() {
+    setEditError('');
+    setGuardandoEdicion(true);
+    try {
+      await api.put(`/vehiculos/${id}`, {
+        codigo_linea: editCodigoLinea || undefined,
+        observaciones: editObservaciones || undefined,
+        nombre_propietario: editNombrePropietario || undefined,
+        direccion_propietario: editDireccionPropietario || undefined,
+        telefono_propietario: editTelefonoPropietario || undefined,
+        email_propietario: editEmailPropietario || undefined,
+      });
+      setEditando(false);
+      queryClient.invalidateQueries({ queryKey: ['vehiculo-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setEditError(err.response?.data?.error ?? 'Error al guardar los cambios');
+    } finally {
+      setGuardandoEdicion(false);
+    }
+  }
+
+  async function handleRetirar() {
+    setRetiroError('');
+    setProcesandoRetiro(true);
+    try {
+      await api.post(`/vehiculos/${id}/retirar`, { obs_retiro: motivoRetiro || undefined });
+      setMostrarRetiro(false);
+      setMotivoRetiro('');
+      queryClient.invalidateQueries({ queryKey: ['vehiculo-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setRetiroError(err.response?.data?.error ?? 'Error al retirar el vehículo');
+    } finally {
+      setProcesandoRetiro(false);
+    }
+  }
+
+  async function handleReactivar() {
+    setRetiroError('');
+    setProcesandoRetiro(true);
+    try {
+      await api.post(`/vehiculos/${id}/reactivar`);
+      queryClient.invalidateQueries({ queryKey: ['vehiculo-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setRetiroError(err.response?.data?.error ?? 'Error al reactivar el vehículo');
+    } finally {
+      setProcesandoRetiro(false);
+    }
+  }
+
+  async function handleEliminar() {
+    setEliminarError('');
+    setEliminando(true);
+    try {
+      await api.delete(`/vehiculos/${id}`);
+      onChanged();
+      onClose();
+    } catch (err: any) {
+      setEliminarError(err.response?.data?.error ?? 'Error al eliminar el vehículo');
+      setEliminando(false);
+    }
+  }
+
   return (
     <ModalShell title={vehiculo ? `Vehículo — ${vehiculo.patente}` : 'Vehículo'} onClose={onClose} maxWidth="max-w-2xl">
       {isLoading || !vehiculo ? (
@@ -506,7 +612,14 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
           <FormSection title="Datos del vehículo">
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div><span className="text-gray-400">Estado</span><br /><span className={BADGE[vehiculo.estado] ?? 'badge-gray'}>{vehiculo.estado_desc}</span></div>
-              <div><span className="text-gray-400">Código línea</span><br />{vehiculo.codigo_linea ?? '—'}</div>
+              <div>
+                <span className="text-gray-400">Código línea</span><br />
+                {editando ? (
+                  <input className="input mt-1" value={editCodigoLinea} onChange={(e) => setEditCodigoLinea(e.target.value)} maxLength={20} />
+                ) : (
+                  vehiculo.codigo_linea ?? '—'
+                )}
+              </div>
               <div><span className="text-gray-400">Fecha ingreso</span><br />{new Date(vehiculo.fecha_ingreso).toLocaleDateString('es-CL')}</div>
               <div><span className="text-gray-400">Fecha retiro</span><br />{vehiculo.fecha_retiro ? new Date(vehiculo.fecha_retiro).toLocaleDateString('es-CL') : '—'}</div>
               <div className="col-span-2">
@@ -537,8 +650,18 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
                 </label>
                 {imagenError && <p className="text-xs text-red-600 mt-1">{imagenError}</p>}
               </div>
-              {vehiculo.observaciones && (
-                <div className="col-span-2"><span className="text-gray-400">Observaciones</span><br />{vehiculo.observaciones}</div>
+              <div className="col-span-2">
+                <span className="text-gray-400">Observaciones</span><br />
+                {editando ? (
+                  <textarea className="input mt-1" rows={2} value={editObservaciones} onChange={(e) => setEditObservaciones(e.target.value)} maxLength={500} />
+                ) : (
+                  vehiculo.observaciones ?? '—'
+                )}
+              </div>
+              {!editando && (
+                <div className="col-span-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={iniciarEdicion}>Editar datos</button>
+                </div>
               )}
             </div>
           </FormSection>
@@ -547,13 +670,52 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
             {vehiculo.rut_propietario ? (
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div><span className="text-gray-400">RUT</span><br />{vehiculo.rut_propietario}</div>
-                <div><span className="text-gray-400">Teléfono</span><br />{vehiculo.telefono_propietario ?? '—'}</div>
-                <div><span className="text-gray-400">Nombre</span><br />{vehiculo.nombre_propietario}</div>
-                <div><span className="text-gray-400">Email</span><br />{vehiculo.email_propietario ?? '—'}</div>
-                <div className="col-span-2"><span className="text-gray-400">Dirección</span><br />{vehiculo.direccion_propietario ?? '—'}</div>
+                <div>
+                  <span className="text-gray-400">Teléfono</span><br />
+                  {editando ? (
+                    <input className="input mt-1" value={editTelefonoPropietario} onChange={(e) => setEditTelefonoPropietario(e.target.value)} maxLength={20} />
+                  ) : (
+                    vehiculo.telefono_propietario ?? '—'
+                  )}
+                </div>
+                <div>
+                  <span className="text-gray-400">Nombre</span><br />
+                  {editando ? (
+                    <input className="input mt-1" value={editNombrePropietario} onChange={(e) => setEditNombrePropietario(e.target.value)} maxLength={150} />
+                  ) : (
+                    vehiculo.nombre_propietario
+                  )}
+                </div>
+                <div>
+                  <span className="text-gray-400">Email</span><br />
+                  {editando ? (
+                    <input type="email" className="input mt-1" value={editEmailPropietario} onChange={(e) => setEditEmailPropietario(e.target.value)} maxLength={150} />
+                  ) : (
+                    vehiculo.email_propietario ?? '—'
+                  )}
+                </div>
+                <div className="col-span-2">
+                  <span className="text-gray-400">Dirección</span><br />
+                  {editando ? (
+                    <input className="input mt-1" value={editDireccionPropietario} onChange={(e) => setEditDireccionPropietario(e.target.value)} maxLength={300} />
+                  ) : (
+                    vehiculo.direccion_propietario ?? '—'
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-sm text-gray-400">Sin propietario registrado</p>
+            )}
+            {editando && (
+              <div className="space-y-2 pt-2">
+                {editError && <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-3 py-2">{editError}</div>}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={() => setEditando(false)}>Cancelar</button>
+                  <button type="button" disabled={guardandoEdicion} onClick={handleGuardarEdicion} className="btn-primary text-xs">
+                    {guardandoEdicion ? 'Guardando...' : 'Guardar cambios'}
+                  </button>
+                </div>
+              </div>
             )}
           </FormSection>
 
@@ -613,6 +775,64 @@ function DetalleVehiculoModal({ id, onClose, onChanged }: { id: number; onClose:
                 </button>
               </div>
             </form>
+          </FormSection>
+
+          <FormSection title="Baja del vehículo">
+            {mostrarRetiro ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="label">Motivo (opcional)</label>
+                  <input className="input" value={motivoRetiro} onChange={(e) => setMotivoRetiro(e.target.value)} maxLength={500} />
+                </div>
+                {retiroError && <p className="text-xs text-red-600">{retiroError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={() => { setMostrarRetiro(false); setMotivoRetiro(''); }}>Cancelar</button>
+                  <button type="button" disabled={procesandoRetiro} onClick={handleRetirar} className="btn-danger text-xs">
+                    {procesandoRetiro ? 'Retirando...' : 'Confirmar retiro'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-500">
+                  {vehiculo.activo
+                    ? 'Marca al vehículo como retirado de la flota. Es reversible: podés reactivarlo cuando quieras.'
+                    : 'El vehículo está retirado. Podés reactivarlo para que vuelva a estar disponible.'}
+                </p>
+                {vehiculo.activo ? (
+                  <button type="button" className="btn-secondary text-xs shrink-0 ml-3" onClick={() => setMostrarRetiro(true)}>Retirar</button>
+                ) : (
+                  <button type="button" disabled={procesandoRetiro} className="btn-secondary text-xs shrink-0 ml-3" onClick={handleReactivar}>
+                    {procesandoRetiro ? 'Reactivando...' : 'Reactivar'}
+                  </button>
+                )}
+              </div>
+            )}
+            {!mostrarRetiro && retiroError && <p className="text-xs text-red-600 mt-2">{retiroError}</p>}
+
+            <div className="border-t border-gray-200 mt-4 pt-4">
+              {mostrarConfirmEliminar ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    Esta acción no se puede deshacer: se borrará el vehículo junto con sus documentos, imágenes e historial de estado.
+                  </p>
+                  {eliminarError && <p className="text-xs text-red-600">{eliminarError}</p>}
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="btn-secondary text-xs" onClick={() => setMostrarConfirmEliminar(false)}>Cancelar</button>
+                    <button type="button" disabled={eliminando} onClick={handleEliminar} className="btn-danger text-xs">
+                      {eliminando ? 'Eliminando...' : 'Sí, eliminar definitivamente'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">Elimina el registro por completo. Úsalo solo para datos cargados por error.</p>
+                  <button type="button" className="text-xs text-red-600 hover:text-red-800 font-medium shrink-0 ml-3" onClick={() => setMostrarConfirmEliminar(true)}>
+                    Eliminar definitivamente
+                  </button>
+                </div>
+              )}
+            </div>
           </FormSection>
 
           <div className="flex justify-end pt-2">
