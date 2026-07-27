@@ -271,6 +271,90 @@ router.post('/:id/reactivar',
   }
 );
 
+// POST /api/conductores/:id/asignacion — asigna/cambia el vehículo del conductor
+router.post('/:id/asignacion',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  body('id_vehiculo').isInt({ min: 1 }),
+  body('fecha_desde').optional().isISO8601(),
+  body('observaciones').optional().trim(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const { id_vehiculo, observaciones } = req.body;
+    const fecha_desde = req.body.fecha_desde || new Date().toISOString().slice(0, 10);
+
+    const conductor = await queryOne(
+      `SELECT id_conductor FROM flota.Conductor WHERE id_conductor = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!conductor) return res.status(404).json({ error: 'Conductor no encontrado' });
+
+    const vehiculo = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id_vehiculo }]
+    );
+    if (!vehiculo) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    await query(
+      `UPDATE flota.AsignacionVehiculoConductor
+       SET fecha_hasta = DATEADD(DAY, -1, @fechaDesde)
+       WHERE id_conductor = @id AND fecha_hasta IS NULL`,
+      [
+        { name: 'fechaDesde', type: sql.Date, value: fecha_desde },
+        { name: 'id',         type: sql.Int,  value: id },
+      ]
+    );
+
+    const nueva = await query(
+      `INSERT INTO flota.AsignacionVehiculoConductor (id_vehiculo, id_conductor, fecha_desde, observaciones)
+       OUTPUT INSERTED.id_asignacion
+       VALUES (@idVehiculo, @id, @fechaDesde, @obs)`,
+      [
+        { name: 'idVehiculo',  type: sql.Int,          value: id_vehiculo },
+        { name: 'id',          type: sql.Int,          value: id },
+        { name: 'fechaDesde',  type: sql.Date,         value: fecha_desde },
+        { name: 'obs',         type: sql.VarChar(500), value: observaciones || null },
+      ]
+    );
+
+    res.status(201).json({ id_asignacion: nueva.recordset[0].id_asignacion });
+  }
+);
+
+// POST /api/conductores/:id/asignacion/finalizar — quita el vehículo asignado
+router.post('/:id/asignacion/finalizar',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  body('fecha_hasta').optional().isISO8601(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const fecha_hasta = req.body.fecha_hasta || new Date().toISOString().slice(0, 10);
+
+    const activa = await queryOne(
+      `SELECT TOP 1 id_asignacion FROM flota.AsignacionVehiculoConductor
+       WHERE id_conductor = @id AND fecha_hasta IS NULL ORDER BY fecha_desde DESC`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!activa) return res.status(400).json({ error: 'El conductor no tiene un vehículo asignado actualmente' });
+
+    await query(
+      `UPDATE flota.AsignacionVehiculoConductor SET fecha_hasta = @fh WHERE id_asignacion = @idAsig`,
+      [
+        { name: 'fh',      type: sql.Date, value: fecha_hasta },
+        { name: 'idAsig',  type: sql.Int,  value: activa.id_asignacion },
+      ]
+    );
+
+    res.json({ ok: true });
+  }
+);
+
 // DELETE /api/conductores/:id — eliminación permanente (irreversible)
 router.delete('/:id',
   authorize('ADMIN'),

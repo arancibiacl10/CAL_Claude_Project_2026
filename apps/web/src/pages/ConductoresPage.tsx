@@ -350,6 +350,7 @@ interface Licencia {
   numero_licencia: string | null; fecha_vencimiento: string; activa: boolean;
 }
 interface VehiculoAsignado { id_asignacion: number; patente: string; fecha_desde: string; fecha_hasta: string | null; es_titular: boolean; }
+interface VehiculoOption { id_vehiculo: number; patente: string; }
 interface ConductorDetalle {
   id_conductor: number; rut: string; nombre: string; apellido_paterno: string | null; apellido_materno: string | null;
   direccion: string | null; telefono: string | null; email: string | null;
@@ -387,7 +388,20 @@ function DetalleConductorModal({ id, onClose, onChanged }: { id: number; onClose
   const [eliminando, setEliminando] = useState(false);
   const [eliminarError, setEliminarError] = useState('');
 
+  const [mostrarAsignacion, setMostrarAsignacion] = useState(false);
+  const [idVehiculoAsignar, setIdVehiculoAsignar] = useState('');
+  const [fechaDesdeAsignar, setFechaDesdeAsignar] = useState(hoy());
+  const [asignando, setAsignando] = useState(false);
+  const [asignacionError, setAsignacionError] = useState('');
+  const [finalizandoAsignacion, setFinalizandoAsignacion] = useState(false);
+
   const queryClient = useQueryClient();
+
+  const { data: vehiculosDisponibles } = useQuery({
+    queryKey: ['vehiculos-para-asignar'],
+    queryFn:  () => api.get('/vehiculos?activos=true&pageSize=200').then((r) => r.data.data as VehiculoOption[]),
+    enabled: mostrarAsignacion,
+  });
 
   const { data: conductor, isLoading } = useQuery({
     queryKey: ['conductor-detalle', id],
@@ -471,6 +485,39 @@ function DetalleConductorModal({ id, onClose, onChanged }: { id: number; onClose
     } catch (err: any) {
       setEliminarError(err.response?.data?.error ?? 'Error al eliminar el conductor');
       setEliminando(false);
+    }
+  }
+
+  async function handleAsignarVehiculo() {
+    setAsignacionError('');
+    setAsignando(true);
+    try {
+      await api.post(`/conductores/${id}/asignacion`, {
+        id_vehiculo: Number(idVehiculoAsignar),
+        fecha_desde: fechaDesdeAsignar,
+      });
+      setMostrarAsignacion(false);
+      setIdVehiculoAsignar('');
+      queryClient.invalidateQueries({ queryKey: ['conductor-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setAsignacionError(err.response?.data?.error ?? 'Error al asignar el vehículo');
+    } finally {
+      setAsignando(false);
+    }
+  }
+
+  async function handleFinalizarAsignacion() {
+    setAsignacionError('');
+    setFinalizandoAsignacion(true);
+    try {
+      await api.post(`/conductores/${id}/asignacion/finalizar`);
+      queryClient.invalidateQueries({ queryKey: ['conductor-detalle', id] });
+      onChanged();
+    } catch (err: any) {
+      setAsignacionError(err.response?.data?.error ?? 'Error al quitar la asignación');
+    } finally {
+      setFinalizandoAsignacion(false);
     }
   }
 
@@ -631,10 +678,66 @@ function DetalleConductorModal({ id, onClose, onChanged }: { id: number; onClose
           </FormSection>
 
           <FormSection title="Vehículos asignados">
-            {conductor.vehiculos.length === 0 ? (
-              <p className="text-sm text-gray-400">Sin vehículo asignado</p>
-            ) : (
-              <div className="space-y-2 text-sm">
+            {(() => {
+              const activa = conductor.vehiculos.find((v) => !v.fecha_hasta);
+              return (
+                <div className="flex items-center justify-between text-sm bg-white border border-gray-200 rounded-lg px-3 py-2">
+                  {activa ? (
+                    <>
+                      <div>
+                        <span className="text-gray-400 text-xs">Vehículo actual</span><br />
+                        <span className="font-mono font-semibold text-gray-900">{activa.patente}</span>
+                        <span className="text-gray-400 text-xs ml-2">desde {new Date(activa.fecha_desde).toLocaleDateString('es-CL')}</span>
+                      </div>
+                      <div className="flex gap-3">
+                        <button type="button" className="text-brand-600 hover:text-brand-800 text-xs font-medium" onClick={() => setMostrarAsignacion(true)}>
+                          Cambiar vehículo
+                        </button>
+                        <button type="button" disabled={finalizandoAsignacion} className="text-red-600 hover:text-red-800 text-xs font-medium" onClick={handleFinalizarAsignacion}>
+                          {finalizandoAsignacion ? 'Quitando...' : 'Quitar asignación'}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-gray-400">Sin vehículo asignado</span>
+                      <button type="button" className="btn-secondary text-xs" onClick={() => setMostrarAsignacion(true)}>Asignar vehículo</button>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
+            {mostrarAsignacion && (
+              <div className="space-y-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="label">Vehículo</label>
+                    <select className="input" value={idVehiculoAsignar} onChange={(e) => setIdVehiculoAsignar(e.target.value)} required>
+                      <option value="" disabled>Seleccionar</option>
+                      {vehiculosDisponibles?.map((v) => (
+                        <option key={v.id_vehiculo} value={v.id_vehiculo}>{v.patente}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Desde</label>
+                    <input type="date" className="input" value={fechaDesdeAsignar} onChange={(e) => setFechaDesdeAsignar(e.target.value)} required />
+                  </div>
+                </div>
+                {asignacionError && <p className="text-xs text-red-600">{asignacionError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-secondary text-xs" onClick={() => { setMostrarAsignacion(false); setIdVehiculoAsignar(''); }}>Cancelar</button>
+                  <button type="button" disabled={asignando || !idVehiculoAsignar} onClick={handleAsignarVehiculo} className="btn-primary text-xs">
+                    {asignando ? 'Asignando...' : 'Confirmar asignación'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {conductor.vehiculos.length > 0 && (
+              <div className="space-y-2 text-sm pt-1">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Historial</p>
                 {conductor.vehiculos.map((v) => (
                   <div key={v.id_asignacion} className="flex items-center justify-between">
                     <span className="font-mono font-medium text-gray-900">{v.patente}</span>
