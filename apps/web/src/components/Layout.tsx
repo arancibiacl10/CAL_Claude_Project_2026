@@ -3,13 +3,14 @@ import { useAuthStore } from '../store/authStore';
 
 const nav = [
   { to: '/dashboard',    label: 'Dashboard',        icon: '📊' },
-  { to: '/hoja-ruta',   label: 'Hoja de Ruta',     icon: '🗺️' },
-  { to: '/control',     label: 'Control Mensual',   icon: '📅' },
-  { to: '/recaudacion', label: 'Recaudación',       icon: '💰' },
-  { to: '/pagos',       label: 'Pagos',             icon: '💳' },
   { to: '/vehiculos',   label: 'Vehículos',         icon: '🚌' },
-  { to: '/conductores', label: 'Conductores',       icon: '👤' },
   { to: '/vencimientos',label: 'Vencimientos',      icon: '⚠️' },
+  { to: '/mantenimiento',label: 'Mantenimiento',    icon: '🔧' },
+  { to: '/conductores', label: 'Conductores',       icon: '👤' },
+  { to: '/hoja-ruta',   label: 'Hoja de Ruta',     icon: '🗺️' },
+  { to: '/recaudacion', label: 'Recaudación',       icon: '💰' },
+  { to: '/control',     label: 'Control Mensual',   icon: '📅' },
+  { to: '/pagos',       label: 'Pagos',             icon: '💳' },
 ];
 
 export default function Layout() {

@@ -1,7 +1,22 @@
+const fs   = require('fs');
+const path = require('path');
 const router = require('express').Router();
 const { body, param, query: qv, validationResult } = require('express-validator');
 const { query, queryOne, paginate, sql } = require('../db/queries');
 const { authenticate, authorize } = require('../middleware/auth');
+const { validarRut, formatearRut } = require('../utils/rut');
+const { validarPatente, formatearPatente } = require('../utils/patente');
+const { uploadContrato, CARPETA_CONTRATOS } = require('../middleware/uploadContrato');
+const { uploadImagen, CARPETA_IMAGENES } = require('../middleware/uploadImagen');
+const { getPool } = require('../db/connection');
+
+const CONTENT_TYPE_POR_EXTENSION = {
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png':  'image/png',
+  '.webp': 'image/webp',
+  '.gif':  'image/gif',
+};
 
 router.use(authenticate);
 
@@ -9,6 +24,12 @@ router.use(authenticate);
 router.get('/', async (req, res) => {
   const { page, pageSize, offset } = paginate(req.query.page, req.query.pageSize);
   const soloActivos = req.query.activos !== 'false';
+  const busqueda    = req.query.q?.trim() ?? '';
+
+  const condiciones = [];
+  if (soloActivos) condiciones.push('v.activo = 1');
+  if (busqueda) condiciones.push("v.patente LIKE '%' + @busqueda + '%'");
+  const whereClause = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
   const result = await query(
     `SELECT v.id_vehiculo, v.patente, v.activo,
@@ -21,18 +42,19 @@ router.get('/', async (req, res) => {
              ORDER BY fecha_vencimiento ASC) AS proximo_vencimiento
      FROM flota.Vehiculo v
      JOIN config.EstadoVehiculo e ON e.id_estado = v.id_estado
-     ${soloActivos ? 'WHERE v.activo = 1' : ''}
+     ${whereClause}
      ORDER BY v.patente
      OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY`,
     [
+      { name: 'busqueda', type: sql.VarChar(20), value: busqueda },
       { name: 'offset',   type: sql.Int, value: offset },
       { name: 'pageSize', type: sql.Int, value: pageSize },
     ]
   );
 
   const total = await queryOne(
-    `SELECT COUNT(*) AS total FROM flota.Vehiculo ${soloActivos ? 'WHERE activo = 1' : ''}`,
-    []
+    `SELECT COUNT(*) AS total FROM flota.Vehiculo v ${whereClause}`,
+    [{ name: 'busqueda', type: sql.VarChar(20), value: busqueda }]
   );
 
   res.json({ data: result.recordset, page, pageSize, total: total.total });
@@ -41,9 +63,13 @@ router.get('/', async (req, res) => {
 // GET /api/vehiculos/:id
 router.get('/:id', param('id').isInt(), async (req, res) => {
   const vehiculo = await queryOne(
-    `SELECT v.*, e.codigo AS estado, e.descripcion AS estado_desc
+    `SELECT v.*, e.codigo AS estado, e.descripcion AS estado_desc,
+            p.rut AS rut_propietario, p.nombre AS nombre_propietario,
+            p.direccion AS direccion_propietario, p.telefono AS telefono_propietario,
+            p.email AS email_propietario
      FROM flota.Vehiculo v
      JOIN config.EstadoVehiculo e ON e.id_estado = v.id_estado
+     LEFT JOIN flota.Propietario p ON p.id_propietario = v.id_propietario
      WHERE v.id_vehiculo = @id`,
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
@@ -62,35 +88,133 @@ router.get('/:id', param('id').isInt(), async (req, res) => {
     [{ name: 'id', type: sql.Int, value: req.params.id }]
   );
 
-  res.json({ ...vehiculo, documentos: documentos.recordset, historial: historial.recordset });
+  const contrato = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'CONTRATO_SERVICIO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
+  const imagen = await queryOne(
+    `SELECT TOP 1 id_imagen, fecha_subida
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'FOTO_VEHICULO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+
+  res.json({
+    ...vehiculo,
+    documentos: documentos.recordset,
+    historial: historial.recordset,
+    contrato_pdf: contrato ? { id_imagen: contrato.id_imagen, fecha_subida: contrato.fecha_subida } : null,
+    imagen_vehiculo: imagen ? { id_imagen: imagen.id_imagen, fecha_subida: imagen.fecha_subida } : null,
+  });
 });
 
 // POST /api/vehiculos
 router.post('/',
   authorize('ADMIN', 'OPERADOR'),
-  body('patente').notEmpty().trim().toUpperCase(),
+  body('patente').notEmpty().trim().toUpperCase()
+    .custom((value) => validarPatente(value)).withMessage('Patente inválida (formato esperado: LLLL-NN)'),
   body('id_estado').isInt({ min: 1 }),
   body('fecha_ingreso').isISO8601(),
+  body('rut_propietario').optional({ checkFalsy: true }).trim()
+    .custom((value) => validarRut(value)).withMessage('RUT de propietario inválido'),
+  body('nombre_propietario').optional().trim(),
+  body('direccion_propietario').optional().trim(),
+  body('telefono_propietario').optional().trim(),
+  body('email_propietario').optional({ checkFalsy: true }).isEmail(),
+  body('codigo_linea').optional().trim(),
+  body('contrato_servicio').optional().trim(),
+  body('observaciones').optional().trim(),
+  body('permiso_circulacion').optional().isISO8601(),
+  body('seguro_obligatorio').optional().isISO8601(),
+  body('revision_tecnica').optional().isISO8601(),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { patente, id_estado, fecha_ingreso, obs_retiro } = req.body;
+    const {
+      patente, id_estado, fecha_ingreso, obs_retiro, observaciones,
+      rut_propietario, nombre_propietario, direccion_propietario,
+      telefono_propietario, email_propietario, codigo_linea, contrato_servicio,
+      permiso_circulacion, seguro_obligatorio, revision_tecnica,
+    } = req.body;
+
+    const patenteNormalizada = formatearPatente(patente);
+
+    let id_propietario = null;
+    if (rut_propietario) {
+      const rutNormalizado = formatearRut(rut_propietario);
+      const existente = await queryOne(
+        `SELECT id_propietario FROM flota.Propietario WHERE rut = @rut`,
+        [{ name: 'rut', type: sql.VarChar(12), value: rutNormalizado }]
+      );
+      if (existente) {
+        id_propietario = existente.id_propietario;
+      } else {
+        const nuevo = await query(
+          `INSERT INTO flota.Propietario (rut, nombre, direccion, telefono, email)
+           OUTPUT INSERTED.id_propietario
+           VALUES (@rut, @nombre, @direccion, @telefono, @email)`,
+          [
+            { name: 'rut',       type: sql.VarChar(12),  value: rutNormalizado },
+            { name: 'nombre',    type: sql.VarChar(150), value: nombre_propietario || rutNormalizado },
+            { name: 'direccion', type: sql.VarChar(300), value: direccion_propietario || null },
+            { name: 'telefono',  type: sql.VarChar(20),  value: telefono_propietario || null },
+            { name: 'email',     type: sql.VarChar(150), value: email_propietario || null },
+          ]
+        );
+        id_propietario = nuevo.recordset[0].id_propietario;
+      }
+    }
 
     const result = await query(
-      `INSERT INTO flota.Vehiculo (patente, id_estado, fecha_ingreso, obs_retiro, id_usuario_reg)
+      `INSERT INTO flota.Vehiculo (
+         patente, id_estado, fecha_ingreso, obs_retiro, observaciones, id_usuario_reg,
+         id_propietario, codigo_linea, contrato_servicio
+       )
        OUTPUT INSERTED.id_vehiculo
-       VALUES (@patente, @id_estado, @fecha_ingreso, @obs, @usr)`,
+       VALUES (
+         @patente, @id_estado, @fecha_ingreso, @obs, @observaciones, @usr,
+         @idPropietario, @codigoLinea, @contratoServicio
+       )`,
       [
-        { name: 'patente',       type: sql.VarChar(10),  value: patente },
+        { name: 'patente',       type: sql.VarChar(10),  value: patenteNormalizada },
         { name: 'id_estado',     type: sql.TinyInt,      value: id_estado },
         { name: 'fecha_ingreso', type: sql.Date,         value: fecha_ingreso },
         { name: 'obs',           type: sql.VarChar(500), value: obs_retiro ?? null },
+        { name: 'observaciones', type: sql.VarChar(500), value: observaciones ?? null },
         { name: 'usr',           type: sql.Int,          value: req.user.id },
+        { name: 'idPropietario',    type: sql.Int,          value: id_propietario },
+        { name: 'codigoLinea',      type: sql.VarChar(20),  value: codigo_linea || null },
+        { name: 'contratoServicio', type: sql.VarChar(255), value: contrato_servicio || null },
       ]
     );
 
-    res.status(201).json({ id_vehiculo: result.recordset[0].id_vehiculo });
+    const id_vehiculo = result.recordset[0].id_vehiculo;
+
+    const documentos = [
+      { tipo: 'PERMISO_CIRCULACION', fecha: permiso_circulacion },
+      { tipo: 'SEGURO_OBLIGATORIO',  fecha: seguro_obligatorio },
+      { tipo: 'REVISION_TECNICA',    fecha: revision_tecnica },
+    ].filter((d) => d.fecha);
+
+    for (const doc of documentos) {
+      await query(
+        `INSERT INTO flota.DocumentoVehiculo (id_vehiculo, tipo_documento, fecha_vencimiento)
+         VALUES (@id, @tipo, @fecha)`,
+        [
+          { name: 'id',    type: sql.Int,         value: id_vehiculo },
+          { name: 'tipo',  type: sql.VarChar(30), value: doc.tipo },
+          { name: 'fecha', type: sql.Date,        value: doc.fecha },
+        ]
+      );
+    }
+
+    res.status(201).json({ id_vehiculo });
   }
 );
 
@@ -99,15 +223,25 @@ router.put('/:id',
   authorize('ADMIN', 'OPERADOR'),
   param('id').isInt(),
   body('id_estado').optional().isInt({ min: 1 }),
+  body('codigo_linea').optional().trim(),
+  body('observaciones').optional().trim(),
+  body('nombre_propietario').optional().trim(),
+  body('direccion_propietario').optional().trim(),
+  body('telefono_propietario').optional().trim(),
+  body('email_propietario').optional({ checkFalsy: true }).isEmail(),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { id_estado, fecha_retiro, obs_retiro, motivo_estado, justifica_desde, justifica_hasta } = req.body;
+    const {
+      id_estado, fecha_retiro, obs_retiro, motivo_estado, justifica_desde, justifica_hasta,
+      codigo_linea, observaciones,
+      nombre_propietario, direccion_propietario, telefono_propietario, email_propietario,
+    } = req.body;
     const id = parseInt(req.params.id);
 
     const actual = await queryOne(
-      `SELECT id_estado FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      `SELECT id_estado, id_propietario FROM flota.Vehiculo WHERE id_vehiculo = @id`,
       [{ name: 'id', type: sql.Int, value: id }]
     );
     if (!actual) return res.status(404).json({ error: 'Vehículo no encontrado' });
@@ -116,15 +250,37 @@ router.put('/:id',
       `UPDATE flota.Vehiculo SET
          id_estado     = ISNULL(@id_estado, id_estado),
          fecha_retiro  = ISNULL(@fecha_retiro, fecha_retiro),
-         obs_retiro    = ISNULL(@obs, obs_retiro)
+         obs_retiro    = ISNULL(@obs, obs_retiro),
+         codigo_linea  = ISNULL(@codigoLinea, codigo_linea),
+         observaciones = ISNULL(@observaciones, observaciones)
        WHERE id_vehiculo = @id`,
       [
-        { name: 'id_estado',    type: sql.TinyInt,      value: id_estado ?? null },
-        { name: 'fecha_retiro', type: sql.Date,         value: fecha_retiro ?? null },
-        { name: 'obs',          type: sql.VarChar(500), value: obs_retiro ?? null },
-        { name: 'id',           type: sql.Int,          value: id },
+        { name: 'id_estado',     type: sql.TinyInt,      value: id_estado ?? null },
+        { name: 'fecha_retiro',  type: sql.Date,         value: fecha_retiro ?? null },
+        { name: 'obs',           type: sql.VarChar(500), value: obs_retiro ?? null },
+        { name: 'codigoLinea',   type: sql.VarChar(20),  value: codigo_linea ?? null },
+        { name: 'observaciones', type: sql.VarChar(500), value: observaciones ?? null },
+        { name: 'id',            type: sql.Int,          value: id },
       ]
     );
+
+    if (actual.id_propietario && (nombre_propietario || direccion_propietario || telefono_propietario || email_propietario)) {
+      await query(
+        `UPDATE flota.Propietario SET
+           nombre    = ISNULL(@nombre, nombre),
+           direccion = ISNULL(@direccion, direccion),
+           telefono  = ISNULL(@telefono, telefono),
+           email     = ISNULL(@email, email)
+         WHERE id_propietario = @idPropietario`,
+        [
+          { name: 'nombre',        type: sql.VarChar(150), value: nombre_propietario || null },
+          { name: 'direccion',     type: sql.VarChar(300), value: direccion_propietario || null },
+          { name: 'telefono',      type: sql.VarChar(20),  value: telefono_propietario || null },
+          { name: 'email',         type: sql.VarChar(150), value: email_propietario || null },
+          { name: 'idPropietario', type: sql.Int,          value: actual.id_propietario },
+        ]
+      );
+    }
 
     if (id_estado && id_estado !== actual.id_estado) {
       await query(
@@ -146,6 +302,218 @@ router.put('/:id',
     res.json({ ok: true });
   }
 );
+
+// POST /api/vehiculos/:id/retirar
+router.post('/:id/retirar',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  body('fecha_retiro').optional().isISO8601(),
+  body('obs_retiro').optional().trim(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const { fecha_retiro, obs_retiro } = req.body;
+
+    const existe = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    await query(
+      `UPDATE flota.Vehiculo SET fecha_retiro = @fr, obs_retiro = @obs WHERE id_vehiculo = @id`,
+      [
+        { name: 'fr',  type: sql.Date,         value: fecha_retiro || new Date().toISOString().slice(0, 10) },
+        { name: 'obs', type: sql.VarChar(500), value: obs_retiro || null },
+        { name: 'id',  type: sql.Int,          value: id },
+      ]
+    );
+
+    res.json({ ok: true });
+  }
+);
+
+// POST /api/vehiculos/:id/reactivar
+router.post('/:id/reactivar',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const existe = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    await query(
+      `UPDATE flota.Vehiculo SET fecha_retiro = NULL, obs_retiro = NULL WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+
+    res.json({ ok: true });
+  }
+);
+
+// DELETE /api/vehiculos/:id — eliminación permanente (irreversible)
+router.delete('/:id',
+  authorize('ADMIN'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const existe = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!existe) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    const imagenes = await query(
+      `SELECT tipo, ruta_archivo FROM flota.ImagenVehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+
+    const tx = new sql.Transaction(getPool());
+    try {
+      await tx.begin();
+      for (const tabla of ['flota.DocumentoVehiculo', 'flota.ImagenVehiculo', 'flota.HistorialEstadoVehiculo', 'flota.AsignacionVehiculoConductor']) {
+        const r = new sql.Request(tx);
+        r.input('id', sql.Int, id);
+        await r.query(`DELETE FROM ${tabla} WHERE id_vehiculo = @id`);
+      }
+      const rFinal = new sql.Request(tx);
+      rFinal.input('id', sql.Int, id);
+      await rFinal.query(`DELETE FROM flota.Vehiculo WHERE id_vehiculo = @id`);
+      await tx.commit();
+    } catch (err) {
+      await tx.rollback();
+      if (err.number === 547) {
+        return res.status(409).json({ error: 'No se puede eliminar: tiene historial operativo asociado (hoja de ruta, control, recaudación o pagos). Use "Retirar" en su lugar.' });
+      }
+      throw err;
+    }
+
+    for (const img of imagenes.recordset) {
+      const carpeta = img.tipo === 'CONTRATO_SERVICIO' ? CARPETA_CONTRATOS : CARPETA_IMAGENES;
+      const rutaAbsoluta = path.join(carpeta, path.basename(img.ruta_archivo));
+      if (fs.existsSync(rutaAbsoluta)) fs.unlinkSync(rutaAbsoluta);
+    }
+
+    res.json({ ok: true });
+  }
+);
+
+// POST /api/vehiculos/:id/contrato — sube el contrato de servicio (PDF)
+router.post('/:id/contrato',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const vehiculo = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!vehiculo) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    uploadContrato.single('contrato')(req, res, async (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el archivo del contrato' });
+
+      const nuevo = await query(
+        `INSERT INTO flota.ImagenVehiculo (id_vehiculo, tipo, ruta_archivo)
+         OUTPUT INSERTED.id_imagen, INSERTED.fecha_subida
+         VALUES (@id, 'CONTRATO_SERVICIO', @ruta)`,
+        [
+          { name: 'id',    type: sql.Int,          value: id },
+          { name: 'ruta',  type: sql.VarChar(500), value: req.file.filename },
+        ]
+      );
+
+      res.status(201).json(nuevo.recordset[0]);
+    });
+  }
+);
+
+// GET /api/vehiculos/:id/contrato — descarga/visualiza el contrato de servicio vigente (PDF)
+router.get('/:id/contrato', param('id').isInt(), async (req, res) => {
+  const contrato = await queryOne(
+    `SELECT TOP 1 ruta_archivo
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'CONTRATO_SERVICIO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+  if (!contrato) return res.status(404).json({ error: 'Este vehículo no tiene contrato de servicio cargado' });
+
+  const rutaAbsoluta = path.join(CARPETA_CONTRATOS, path.basename(contrato.ruta_archivo));
+  if (!fs.existsSync(rutaAbsoluta)) return res.status(404).json({ error: 'El archivo del contrato no se encuentra en el servidor' });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="contrato-servicio.pdf"');
+  res.sendFile(rutaAbsoluta);
+});
+
+// POST /api/vehiculos/:id/imagen — sube una foto del vehículo (JPG/PNG/WEBP/GIF)
+router.post('/:id/imagen',
+  authorize('ADMIN', 'OPERADOR'),
+  param('id').isInt(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+    const id = parseInt(req.params.id);
+    const vehiculo = await queryOne(
+      `SELECT id_vehiculo FROM flota.Vehiculo WHERE id_vehiculo = @id`,
+      [{ name: 'id', type: sql.Int, value: id }]
+    );
+    if (!vehiculo) return res.status(404).json({ error: 'Vehículo no encontrado' });
+
+    uploadImagen.single('imagen')(req, res, async (err) => {
+      if (err) return res.status(400).json({ error: err.message });
+      if (!req.file) return res.status(400).json({ error: 'Debe adjuntar el archivo de la imagen' });
+
+      const nuevo = await query(
+        `INSERT INTO flota.ImagenVehiculo (id_vehiculo, tipo, ruta_archivo)
+         OUTPUT INSERTED.id_imagen, INSERTED.fecha_subida
+         VALUES (@id, 'FOTO_VEHICULO', @ruta)`,
+        [
+          { name: 'id',   type: sql.Int,          value: id },
+          { name: 'ruta', type: sql.VarChar(500), value: req.file.filename },
+        ]
+      );
+
+      res.status(201).json(nuevo.recordset[0]);
+    });
+  }
+);
+
+// GET /api/vehiculos/:id/imagen — muestra la foto vigente del vehículo
+router.get('/:id/imagen', param('id').isInt(), async (req, res) => {
+  const imagen = await queryOne(
+    `SELECT TOP 1 ruta_archivo
+     FROM flota.ImagenVehiculo
+     WHERE id_vehiculo = @id AND tipo = 'FOTO_VEHICULO'
+     ORDER BY fecha_subida DESC`,
+    [{ name: 'id', type: sql.Int, value: req.params.id }]
+  );
+  if (!imagen) return res.status(404).json({ error: 'Este vehículo no tiene imagen cargada' });
+
+  const rutaAbsoluta = path.join(CARPETA_IMAGENES, path.basename(imagen.ruta_archivo));
+  if (!fs.existsSync(rutaAbsoluta)) return res.status(404).json({ error: 'El archivo de la imagen no se encuentra en el servidor' });
+
+  const contentType = CONTENT_TYPE_POR_EXTENSION[path.extname(rutaAbsoluta).toLowerCase()] || 'application/octet-stream';
+  res.setHeader('Content-Type', contentType);
+  res.sendFile(rutaAbsoluta);
+});
 
 // GET /api/vehiculos/vencimientos/proximos
 router.get('/vencimientos/proximos', async (req, res) => {

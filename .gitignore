@@ -5,3 +5,7 @@ dist/
 *.log
 .DS_Store
 coverage/
+*.xlsx
+*.xlsm
+~$*
+apps/api/uploads/

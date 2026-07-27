@@ -12,6 +12,7 @@ const rateLimiter   = require('./middleware/rateLimiter');
 
 const authRoutes        = require('./routes/auth.routes');
 const vehiculoRoutes    = require('./routes/vehiculo.routes');
+const mantenimientoRoutes = require('./routes/mantenimiento.routes');
 const conductorRoutes   = require('./routes/conductor.routes');
 const hojaRutaRoutes    = require('./routes/hojaRuta.routes');
 const controlRoutes     = require('./routes/control.routes');
@@ -32,6 +33,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date() }));
 
 app.use('/api/auth',         authRoutes);
 app.use('/api/vehiculos',    vehiculoRoutes);
+app.use('/api/mantenimientos', mantenimientoRoutes);
 app.use('/api/conductores',  conductorRoutes);
 app.use('/api/hoja-ruta',    hojaRutaRoutes);
 app.use('/api/control',      controlRoutes);
